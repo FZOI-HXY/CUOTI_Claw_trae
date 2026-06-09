@@ -1,0 +1,9 @@
+{
+  "include": ["."],
+  "exclude": ["dist", "build", "__pycache__", ".git"],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "reportUnusedCallResult": false,
+  "reportAny": false,
+  "reportUnknownMemberType": false
+}

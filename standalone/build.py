@@ -21,7 +21,6 @@ Claw 错题管理系统 — PyInstaller 打包构建脚本
   python build.py --clean            # 清理旧构建后重新打包
 """
 
-import os
 import sys
 import shutil
 import subprocess
@@ -48,7 +47,7 @@ PY_MODULES = [
 ]
 
 # 需要作为数据文件打包的路径 (相对 PROJECT_DIR)
-DATA_FILES = [
+DATA_FILES: list[tuple[str, str]] = [
     # ("local_cache", "local_cache"),  # 离线缓存目录
 ]
 
@@ -143,9 +142,6 @@ EXCLUDE_MODULES = [
     "pydantic",
 ]
 
-# UPX 压缩路径 (如果已安装)
-UPX_DIR = None  # 设为 None 自动检测，或指定路径如 "C:/upx"
-
 
 # ============================================================
 # 工具函数
@@ -195,7 +191,7 @@ def check_dependencies():
         "httpx": "httpx",
         "PIL": "Pillow",
     }
-    missing = []
+    missing: list[str] = []
     for import_name, pip_name in deps.items():
         try:
             __import__(import_name)
@@ -211,22 +207,18 @@ def check_dependencies():
     return True
 
 
-def find_upx():
+def find_upx() -> str | None:
     """自动查找 UPX 可执行文件"""
-    global UPX_DIR
-    if UPX_DIR:
-        return UPX_DIR
     paths = [
-        r"C:\upx",
-        r"C:\Program Files\upx",
+        Path(r"C:\upx"),
+        Path(r"C:\Program Files\upx"),
         PROJECT_DIR.parent / "upx",
     ]
     for p in paths:
-        upx_exe = Path(p) / "upx.exe"
+        upx_exe = p / "upx.exe"
         if upx_exe.is_file():
             log(f"UPX found: {upx_exe}")
-            UPX_DIR = str(p)
-            return UPX_DIR
+            return str(p)
     log("UPX 未找到，将跳过压缩 (可下载 https://upx.github.io/)", "WARN")
     return None
 
@@ -254,22 +246,29 @@ def generate_icon():
 
     log("图标文件不存在，正在生成...", "WARN")
     try:
-        from generate_icon import create_app_icon
-        create_app_icon(str(ICON_FILE))
+        # 使用显式相对导入，避免隐式相对导入警告
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "generate_icon", str(PROJECT_DIR / "generate_icon.py")
+        )
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.create_app_icon(str(ICON_FILE))  # type: ignore[reportAny]
         return True
     except Exception as e:
         log(f"图标生成失败: {e}，将使用默认图标", "WARN")
         return False
 
 
-def get_pyinstaller_args(windowed: bool = True) -> list:
+def get_pyinstaller_args(windowed: bool = True) -> list[str]:
     """
     构建 PyInstaller 命令行参数
 
     Args:
         windowed: True = 无控制台窗口, False = 带控制台 (调试用)
     """
-    args = []
+    args: list[str] = []
 
     # === 基本设置 ===
     args.extend([str(ENTRY_SCRIPT)])
@@ -340,7 +339,7 @@ def get_pyinstaller_args(windowed: bool = True) -> list:
     return args
 
 
-def run_pyinstaller(args: list) -> bool:
+def run_pyinstaller(args: list[str]) -> bool:
     """执行 PyInstaller 打包"""
     cmd = [sys.executable, "-m", "PyInstaller"] + args
     log(f"执行: pyinstaller {' '.join(args[:10])}...")
@@ -352,10 +351,10 @@ def run_pyinstaller(args: list) -> bool:
 
     try:
         with open(log_file, "w", encoding="utf-8") as f:
-            f.write("=" * 60 + "\n")
-            f.write(f"Claw Build Log - {datetime.now().isoformat()}\n")
-            f.write(f"Command: {' '.join(cmd)}\n")
-            f.write("=" * 60 + "\n\n")
+            f.write("=" * 60 + "\n")  # type: ignore[reportUnusedCallResult]
+            f.write(f"Claw Build Log - {datetime.now().isoformat()}\n")  # type: ignore[reportUnusedCallResult]
+            f.write(f"Command: {' '.join(cmd)}\n")  # type: ignore[reportUnusedCallResult]
+            f.write("=" * 60 + "\n\n")  # type: ignore[reportUnusedCallResult]
 
             process = subprocess.Popen(
                 cmd,
@@ -367,10 +366,12 @@ def run_pyinstaller(args: list) -> bool:
                 errors="replace",
             )
 
-            for line in process.stdout:
-                stripped = line.rstrip()
-                print(f"  {stripped}")
-                f.write(line)
+            stdout = process.stdout
+            if stdout:
+                for line in stdout:
+                    stripped = line.rstrip()
+                    print(f"  {stripped}")
+                    f.write(line)  # type: ignore[reportUnusedCallResult]
 
             process.wait()
 
@@ -444,15 +445,15 @@ def main():
   python build.py --no-icon          # 跳过图标生成
         """
     )
-    parser.add_argument("--console", action="store_true",
+    parser.add_argument("--console", action="store_true",  # type: ignore[reportUnusedCallResult]
                         help="保留控制台窗口 (调试用)")
-    parser.add_argument("--clean", action="store_true",
+    parser.add_argument("--clean", action="store_true",  # type: ignore[reportUnusedCallResult]
                         help="打包前清理旧构建产物")
-    parser.add_argument("--no-icon", action="store_true",
+    parser.add_argument("--no-icon", action="store_true",  # type: ignore[reportUnusedCallResult]
                         help="不生成图标")
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
 
-    start_time = time.time()
+    start_time: float = time.time()
 
     print()
     log("=" * 50)
@@ -471,23 +472,23 @@ def main():
     print()
 
     # 2. 清理旧构建
-    if args.clean:
+    if args.clean:  # type: ignore[reportAny]
         log("--- 清理旧构建 ---")
         clean_build()
         print()
 
     # 3. 生成图标
-    if not args.no_icon:
+    if not args.no_icon:  # type: ignore[reportAny]
         log("--- 图标处理 ---")
         generate_icon()
         print()
 
     # 4. 构建参数
     log("--- 打包配置 ---")
-    build_args = get_pyinstaller_args(windowed=not args.console)
+    build_args: list[str] = get_pyinstaller_args(windowed=not args.console)  # type: ignore[reportAny]
 
     # 打印参数摘要
-    mode = "windowed (无控制台)" if not args.console else "console (调试)"
+    mode = "windowed (无控制台)" if not args.console else "console (调试)"  # type: ignore[reportAny]
     log(f"模式: {mode}")
     log(f"图标: {'有' if ICON_FILE.exists() else '无'}")
     log(f"版本: {'有' if VERSION_FILE.exists() else '无'}")
