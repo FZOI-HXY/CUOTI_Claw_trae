@@ -6,11 +6,10 @@ import base64
 import re
 import json
 import httpx
-import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from logger import setup_logger
+from backend.logger import setup_logger
 
 logger = setup_logger("MarkdownGenerator")
 

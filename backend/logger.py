@@ -3,9 +3,8 @@
 """
 import logging
 import sys
-from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from config import settings
+from backend.config import settings
 
 
 def setup_logger(name: str) -> logging.Logger:

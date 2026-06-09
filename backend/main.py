@@ -10,26 +10,26 @@
 
 参考文档: https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5
 """
-import os
 import io
-import re
 import uuid
 import shutil
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
-from config import settings, ENV_FILE_PATH
-from logger import setup_logger
-from paddle_service import PaddleOCRService
-from markdown_generator import MarkdownGenerator
+from backend.config import settings, ENV_FILE_PATH
+from backend.logger import setup_logger
+from backend.paddle_service import PaddleOCRService
+from backend.markdown_generator import MarkdownGenerator
+from backend.services.task_service import task_service as ts
+from backend.services.config_service import save_env_file
 
 logger = setup_logger("MainServer")
 
@@ -37,7 +37,7 @@ logger = setup_logger("MainServer")
 app = FastAPI(
     title="错题管理系统",
     description="基于 PaddleOCR PP-StructureV3 的智能错题识别与管理系统",
-    version="1.1.0",
+    version="1.2.0",
 )
 
 # CORS 配置
@@ -57,9 +57,28 @@ paddle_service = PaddleOCRService(
 )
 markdown_generator = MarkdownGenerator(output_dir=settings.get_output_path())
 
-# 内存中的处理记录
-processing_history: List[dict] = []
 SYSTEM_START_TIME = datetime.now()
+
+
+# ============ 全局异常处理器 ============
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_request: Request, exc: HTTPException):
+    """捕获 HTTPException，返回统一格式"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "error": exc.detail, "code": str(exc.status_code)},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """全局未知异常处理器"""
+    logger.error(f"未处理异常 [{request.method} {request.url.path}]: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "error": str(exc), "code": "INTERNAL_ERROR"},
+    )
 
 
 # ============ API 路由 ============
@@ -68,7 +87,7 @@ SYSTEM_START_TIME = datetime.now()
 async def root():
     return {
         "name": "错题管理系统",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "status": "running",
         "uptime": str(datetime.now() - SYSTEM_START_TIME),
     }
@@ -85,7 +104,7 @@ async def system_status():
         "status": "running",
         "start_time": SYSTEM_START_TIME.isoformat(),
         "uptime_seconds": (datetime.now() - SYSTEM_START_TIME).total_seconds(),
-        "processed_count": len(processing_history),
+        "processed_count": ts.get_history_count(),
         "api_configured": bool(settings.paddleocr_api_key),
         "upload_dir": str(settings.get_upload_path()),
         "output_dir": str(settings.get_output_path()),
@@ -115,7 +134,6 @@ async def update_config(config_data: dict):
         updated = []
         for key, value in config_data.items():
             if hasattr(settings, key):
-                # 如果 value 为 None 或空字符串且 key 是 api_key，跳过（保留原值）
                 if key == "paddleocr_api_key" and not value:
                     continue
                 setattr(settings, key, value)
@@ -123,7 +141,7 @@ async def update_config(config_data: dict):
                 logger.info(f"配置更新: {key} = {'***' if 'key' in key else value}")
 
         # 将更新持久化写入 .env 文件
-        _save_env_file(config_data)
+        save_env_file(config_data, ENV_FILE_PATH)
 
         # 如果 API 配置有变化，重新初始化 paddle_service
         if any(k in updated for k in ("paddleocr_api_url", "paddleocr_api_key", "paddleocr_model")):
@@ -145,65 +163,12 @@ async def update_config(config_data: dict):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def _save_env_file(config_data: dict):
-    """将配置更新写入 .env 文件"""
-    env_path = ENV_FILE_PATH
-
-    # 字段名映射：Python 小写 → .env 大写
-    key_mapping = {
-        "paddleocr_api_url": "PADDLEOCR_API_URL",
-        "paddleocr_api_key": "PADDLEOCR_API_KEY",
-        "paddleocr_model": "PADDLEOCR_MODEL",
-        "host": "HOST",
-        "port": "PORT",
-        "debug": "DEBUG",
-        "upload_dir": "UPLOAD_DIR",
-        "output_dir": "OUTPUT_DIR",
-        "log_dir": "LOG_DIR",
-        "max_upload_size_mb": "MAX_UPLOAD_SIZE_MB",
-        "log_level": "LOG_LEVEL",
-    }
-
-    # 读取现有 .env 内容
-    if env_path.exists():
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-    else:
-        lines = []
-
-    for python_key, value in config_data.items():
-        env_key = key_mapping.get(python_key)
-        if not env_key:
-            continue
-        # 跳过空的 api_key
-        if python_key == "paddleocr_api_key" and not value:
-            continue
-
-        # 转换 value 为字符串
-        str_value = str(value).lower() if isinstance(value, bool) else str(value)
-
-        # 查找并更新对应行
-        found = False
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith(f"{env_key}=") or stripped.startswith(f"# {env_key}="):
-                lines[i] = f"{env_key}={str_value}"
-                found = True
-                break
-
-        # 如果没找到，追加到文件末尾
-        if not found:
-            lines.append(f"{env_key}={str_value}")
-
-    # 写回文件
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    logger.info(f"配置已持久化到 {env_path}")
-
-
 @app.get("/api/history")
 async def get_history(limit: int = Query(default=50, le=200)):
+    items = ts.get_history(limit)
     return {
-        "total": len(processing_history),
-        "items": processing_history[:limit],
+        "total": ts.get_history_count(),
+        "items": items,
     }
 
 
@@ -253,10 +218,7 @@ async def upload_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
 
 
-# ============ 异步任务存储（内存） ============
-# key: task_id, value: {"file_id", "filename", "status", "result", "error", "submit_time", "complete_time"}
-task_store: Dict[str, dict] = {}
-
+# ============ 异步任务 API ============
 
 @app.post("/api/submit/{file_id}")
 async def submit_task(
@@ -266,11 +228,6 @@ async def submit_task(
 ):
     """
     提交 PaddleOCR 异步识别任务
-
-    流程:
-    1. 查找上传的文件
-    2. 提交到 PaddleOCR API（异步），获取 taskId
-    3. 返回 taskId，前端通过轮询获取结果
     """
     upload_path = settings.get_upload_path()
     matching_files = list(upload_path.glob(f"{file_id}.*"))
@@ -284,7 +241,6 @@ async def submit_task(
         with open(file_path, "rb") as f:
             image_data = f.read()
 
-        # 提交异步任务到 PaddleOCR API
         submit_result = await paddle_service.submit_task(
             image_data=image_data,
             filename=file_path.name,
@@ -297,16 +253,15 @@ async def submit_task(
 
         job_id = submit_result["job_id"]
 
-        # 存储任务信息
-        task_store[job_id] = {
+        ts.set_task(job_id, {
             "file_id": file_id,
             "filename": file_path.name,
             "job_id": job_id,
             "status": "processing",
             "submit_time": datetime.now().isoformat(),
-            "image_data": image_data,  # 暂存用于后续保存报告
+            "image_data": image_data,
             "batch_id": batch_id,
-        }
+        })
 
         logger.info(f"任务已提交: file_id={file_id}, job_id={job_id}")
         return {
@@ -327,17 +282,7 @@ async def submit_task(
 
 @app.post("/api/submit-url")
 async def submit_task_by_url(request_data: dict):
-    """
-    通过文件 URL 提交 PaddleOCR 异步识别任务（无需先上传文件）
-
-    请求体:
-    {
-        "fileUrl": "https://example.com/document.pdf",
-        "filename": "document.pdf",
-        "pageRanges": "2,4-6",   // 可选
-        "batchId": "batch_001"    // 可选
-    }
-    """
+    """通过文件 URL 提交 PaddleOCR 异步识别任务（无需先上传文件）"""
     file_url = request_data.get("fileUrl")
     if not file_url:
         raise HTTPException(status_code=400, detail="fileUrl 参数必填")
@@ -361,7 +306,7 @@ async def submit_task_by_url(request_data: dict):
 
         job_id = submit_result["job_id"]
 
-        task_store[job_id] = {
+        ts.set_task(job_id, {
             "file_id": None,
             "filename": filename,
             "job_id": job_id,
@@ -369,7 +314,7 @@ async def submit_task_by_url(request_data: dict):
             "submit_time": datetime.now().isoformat(),
             "image_data": None,
             "batch_id": batch_id,
-        }
+        })
 
         logger.info(f"URL任务已提交: {filename}, job_id={job_id}")
         return {
@@ -389,11 +334,7 @@ async def submit_task_by_url(request_data: dict):
 
 @app.get("/api/batch/{batch_id}")
 async def get_batch_results(batch_id: str):
-    """
-    批量获取同一 batchId 下所有任务的结果
-
-    限制: 同一 batchId 最多 100 条任务
-    """
+    """批量获取同一 batchId 下所有任务的结果"""
     try:
         batch_result = await paddle_service.batch_get_results(batch_id)
         if not batch_result["success"]:
@@ -416,14 +357,10 @@ async def get_batch_results(batch_id: str):
 async def poll_task_result(task_id: str):
     """
     轮询 PaddleOCR 异步任务结果（单次查询，由前端循环驱动）。
-
-    前端每隔 N 秒调用此接口，直到 status 变为 "done" / "error" / "stuck"。
-    返回详细的进度信息（totalPages, extractedPages）。
     """
-    if task_id not in task_store:
+    task_info = ts.get_task(task_id)
+    if task_info is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-
-    task_info = task_store[task_id]
 
     # 如果已经完成/卡死/出错，直接返回缓存结果
     if task_info["status"] in ("done", "error", "stuck"):
@@ -437,108 +374,17 @@ async def poll_task_result(task_id: str):
             "completed": True,
         }
 
-    # ---- 卡死检测 ----
-    STUCK_THRESHOLD = 15  # 进度连续不变的次数阈值
+    # 卡死检测参数
+    STUCK_THRESHOLD = 15
     last_extracted = task_info.get("_last_extracted_pages", -1)
     no_progress_count = task_info.get("_no_progress_count", 0)
-    # ------------------
 
-    # 单次轮询 PaddleOCR API（不做内循环）
     try:
         poll_status = await paddle_service.poll_once(task_id, task_info["filename"])
-
         status = poll_status.get("status")
 
         if status == "done":
-            # ---- 任务完成 ----
-            submit_time = datetime.fromisoformat(task_info["submit_time"])
-            processing_time = round((datetime.now() - submit_time).total_seconds(), 2)
-
-            extracted = paddle_service.extract_result(poll_status)
-
-            json_text = poll_status.get("json_text", "")
-            raw_json = poll_status.get("raw_json")
-            structure_result = {
-                "poll_data": poll_status.get("raw_result"),
-                "raw_json": raw_json,
-                "json_text_preview": json_text[:2000] if json_text else "",
-            }
-
-            report_dir = markdown_generator.save_report(
-                original_filename=task_info["filename"],
-                markdown_text=extracted["markdown_text"],
-                images=extracted["images"],
-                layout_image_base64=extracted.get("layout_image"),
-                layout_items=extracted.get("layout_items", []),
-                original_image_data=task_info.get("image_data"),
-                structure_result=structure_result,
-                processing_time=processing_time,
-            )
-
-            # 保存独立的版面分析报告
-            layout_items = extracted.get("layout_items", [])
-            if layout_items:
-                markdown_generator.save_layout_report_standalone(
-                    report_dir=report_dir,
-                    original_filename=task_info["filename"],
-                    layout_items=layout_items,
-                    layout_image_base64=extracted.get("layout_image"),
-                    processing_time=processing_time,
-                )
-
-            if json_text:
-                json_dump_path = Path(report_dir) / "downloaded_result.json"
-                with open(json_dump_path, "w", encoding="utf-8") as f:
-                    f.write(json_text)
-                logger.info(f"原始下载JSON已保存: {json_dump_path}")
-
-            result_data = {
-                "success": True,
-                "markdown_text": extracted["markdown_text"],
-                "images": extracted["images"],
-                "images_count": len(extracted["images"]),
-                "layout_items": extracted.get("layout_items", []),
-                "layout_items_count": len(extracted.get("layout_items", [])),
-                "layout_image_base64": extracted.get("layout_image"),
-                "report_dir": str(report_dir),
-                "processing_time": processing_time,
-                "total_pages": poll_status.get("total_pages", 0),
-                "extracted_pages": poll_status.get("extracted_pages", 0),
-            }
-
-            task_info["status"] = "done"
-            task_info["result"] = result_data
-            task_info["complete_time"] = datetime.now().isoformat()
-            task_info.pop("_last_extracted_pages", None)
-            task_info.pop("_no_progress_count", None)
-            task_info.pop("image_data", None)
-
-            history_item = {
-                "id": uuid.uuid4().hex[:8],
-                "file_id": task_info["file_id"],
-                "filename": task_info["filename"],
-                "timestamp": datetime.now().isoformat(),
-                "success": True,
-                "processing_time": processing_time,
-                "images_count": len(extracted["images"]),
-                "markdown_length": len(extracted["markdown_text"]),
-                "report_dir": str(report_dir),
-                "model": settings.paddleocr_model,
-                "total_pages": poll_status.get("total_pages", 0),
-            }
-            processing_history.insert(0, history_item)
-            if len(processing_history) > 200:
-                processing_history.pop()
-
-            logger.info(f"任务完成: task_id={task_id}, file={task_info['filename']}")
-            return {
-                "task_id": task_id,
-                "file_id": task_info["file_id"],
-                "filename": task_info["filename"],
-                "status": "done",
-                "result": result_data,
-                "completed": True,
-            }
+            return await _handle_task_done(task_id, task_info, poll_status)
 
         elif status == "failed":
             task_info["status"] = "error"
@@ -554,7 +400,6 @@ async def poll_task_result(task_id: str):
             }
 
         elif status == "error":
-            # 网络临吀异常，不立即失败，让前端继续轮询
             logger.warning(f"单次轮询异常: task_id={task_id}, error={poll_status.get('error')}")
             return {
                 "task_id": task_id,
@@ -567,52 +412,8 @@ async def poll_task_result(task_id: str):
             }
 
         elif status in ("running", "pending"):
-            # ---- 卡死检测 ----
-            extracted = poll_status.get("extracted_pages", 0)
-            total = poll_status.get("total_pages", 0)
-
-            if status == "running" and extracted == last_extracted and total > 0:
-                no_progress_count += 1
-            else:
-                no_progress_count = 0
-                last_extracted = extracted
-
-            task_info["_last_extracted_pages"] = last_extracted
-            task_info["_no_progress_count"] = no_progress_count
-
-            if no_progress_count >= STUCK_THRESHOLD:
-                msg = (
-                    f"任务疑似卡死: running {extracted}/{total} 页, "
-                    f"连续 {no_progress_count} 次无变化"
-                )
-                task_info["status"] = "stuck"
-                task_info["error"] = msg
-                task_info.pop("image_data", None)
-                logger.warning(f"任务卡死: task_id={task_id}, {msg}")
-                return {
-                    "task_id": task_id,
-                    "file_id": task_info["file_id"],
-                    "filename": task_info["filename"],
-                    "status": "stuck",
-                    "error": msg,
-                    "completed": True,
-                }
-            # ------------------
-
-            return {
-                "task_id": task_id,
-                "file_id": task_info["file_id"],
-                "filename": task_info["filename"],
-                "status": "processing",
-                "result": None,
-                "completed": False,
-                "progress": {
-                    "state": status,
-                    "extracted_pages": extracted,
-                    "total_pages": total,
-                    "attempt": task_info.get("_no_progress_count", 0),
-                },
-            }
+            return _handle_task_running(task_id, task_info, poll_status, status,
+                                       last_extracted, no_progress_count, STUCK_THRESHOLD)
 
         else:
             logger.warning(f"未知轮询状态: task_id={task_id}, status={status}")
@@ -641,14 +442,147 @@ async def poll_task_result(task_id: str):
         }
 
 
+async def _handle_task_done(task_id: str, task_info: dict, poll_status: dict):
+    """处理任务完成逻辑（从 poll_task_result 提取，降低复杂度）"""
+    submit_time = datetime.fromisoformat(task_info["submit_time"])
+    processing_time = round((datetime.now() - submit_time).total_seconds(), 2)
+
+    extracted = paddle_service.extract_result(poll_status)
+
+    json_text = poll_status.get("json_text", "")
+    raw_json = poll_status.get("raw_json")
+    structure_result = {
+        "poll_data": poll_status.get("raw_result"),
+        "raw_json": raw_json,
+        "json_text_preview": json_text[:2000] if json_text else "",
+    }
+
+    report_dir = markdown_generator.save_report(
+        original_filename=task_info["filename"],
+        markdown_text=extracted["markdown_text"],
+        images=extracted["images"],
+        layout_image_base64=extracted.get("layout_image"),
+        layout_items=extracted.get("layout_items", []),
+        original_image_data=task_info.get("image_data"),
+        structure_result=structure_result,
+        processing_time=processing_time,
+    )
+
+    layout_items = extracted.get("layout_items", [])
+    if layout_items:
+        markdown_generator.save_layout_report_standalone(
+            report_dir=report_dir,
+            original_filename=task_info["filename"],
+            layout_items=layout_items,
+            layout_image_base64=extracted.get("layout_image"),
+            processing_time=processing_time,
+        )
+
+    if json_text:
+        json_dump_path = Path(report_dir) / "downloaded_result.json"
+        with open(json_dump_path, "w", encoding="utf-8") as f:
+            f.write(json_text)
+        logger.info(f"原始下载JSON已保存: {json_dump_path}")
+
+    result_data = {
+        "success": True,
+        "markdown_text": extracted["markdown_text"],
+        "images": extracted["images"],
+        "images_count": len(extracted["images"]),
+        "layout_items": extracted.get("layout_items", []),
+        "layout_items_count": len(extracted.get("layout_items", [])),
+        "layout_image_base64": extracted.get("layout_image"),
+        "report_dir": str(report_dir),
+        "processing_time": processing_time,
+        "total_pages": poll_status.get("total_pages", 0),
+        "extracted_pages": poll_status.get("extracted_pages", 0),
+    }
+
+    task_info["status"] = "done"
+    task_info["result"] = result_data
+    task_info["complete_time"] = datetime.now().isoformat()
+    task_info.pop("_last_extracted_pages", None)
+    task_info.pop("_no_progress_count", None)
+    task_info.pop("image_data", None)
+
+    ts.add_history({
+        "id": uuid.uuid4().hex[:8],
+        "file_id": task_info["file_id"],
+        "filename": task_info["filename"],
+        "timestamp": datetime.now().isoformat(),
+        "success": True,
+        "processing_time": processing_time,
+        "images_count": len(extracted["images"]),
+        "markdown_length": len(extracted["markdown_text"]),
+        "report_dir": str(report_dir),
+        "model": settings.paddleocr_model,
+        "total_pages": poll_status.get("total_pages", 0),
+    })
+
+    logger.info(f"任务完成: task_id={task_id}, file={task_info['filename']}")
+    return {
+        "task_id": task_id,
+        "file_id": task_info["file_id"],
+        "filename": task_info["filename"],
+        "status": "done",
+        "result": result_data,
+        "completed": True,
+    }
+
+
+def _handle_task_running(task_id: str, task_info: dict, poll_status: dict,
+                         status: str, last_extracted: int,
+                         no_progress_count: int, stuck_threshold: int):
+    """处理运行中/待处理状态（含卡死检测）"""
+    extracted = poll_status.get("extracted_pages", 0)
+    total = poll_status.get("total_pages", 0)
+
+    if status == "running" and extracted == last_extracted and total > 0:
+        no_progress_count += 1
+    else:
+        no_progress_count = 0
+        last_extracted = extracted
+
+    task_info["_last_extracted_pages"] = last_extracted
+    task_info["_no_progress_count"] = no_progress_count
+
+    if no_progress_count >= stuck_threshold:
+        msg = (
+            f"任务疑似卡死: running {extracted}/{total} 页, "
+            f"连续 {no_progress_count} 次无变化"
+        )
+        task_info["status"] = "stuck"
+        task_info["error"] = msg
+        task_info.pop("image_data", None)
+        logger.warning(f"任务卡死: task_id={task_id}, {msg}")
+        return {
+            "task_id": task_id,
+            "file_id": task_info["file_id"],
+            "filename": task_info["filename"],
+            "status": "stuck",
+            "error": msg,
+            "completed": True,
+        }
+
+    return {
+        "task_id": task_id,
+        "file_id": task_info["file_id"],
+        "filename": task_info["filename"],
+        "status": "processing",
+        "result": None,
+        "completed": False,
+        "progress": {
+            "state": status,
+            "extracted_pages": extracted,
+            "total_pages": total,
+            "attempt": task_info.get("_no_progress_count", 0),
+        },
+    }
+
+
 @app.post("/api/process/{file_id}")
 async def process_image(file_id: str):
-    """
-    处理图片（同步等待模式，兼容旧版）:
-    提交 PP-StructureV3 异步任务 → 轮询直到完成 → 返回结果。
-
-    推荐使用: POST /api/submit/{file_id} + POST /api/poll/{task_id}（异步模式）
-    """
+    """处理图片（同步等待模式，兼容旧版）"""
     upload_path = settings.get_upload_path()
     matching_files = list(upload_path.glob(f"{file_id}.*"))
     if not matching_files:
@@ -661,13 +595,11 @@ async def process_image(file_id: str):
         with open(file_path, "rb") as f:
             image_data = f.read()
 
-        # 提交并轮询直到完成
         result = await paddle_service.submit_and_poll(image_data, file_path.name)
 
         if not result["success"]:
             raise Exception(result.get("error", "处理失败"))
 
-        # 保存报告
         report_dir = markdown_generator.save_report(
             original_filename=file_path.name,
             markdown_text=result["markdown_text"],
@@ -679,7 +611,6 @@ async def process_image(file_id: str):
             processing_time=result.get("processing_time", 0),
         )
 
-        # 保存独立的版面分析报告
         layout_items_sync = result.get("layout_items", [])
         if layout_items_sync:
             markdown_generator.save_layout_report_standalone(
@@ -690,7 +621,7 @@ async def process_image(file_id: str):
                 processing_time=result.get("processing_time", 0),
             )
 
-        history_item = {
+        ts.add_history({
             "id": uuid.uuid4().hex[:8],
             "file_id": file_id,
             "filename": file_path.name,
@@ -700,10 +631,7 @@ async def process_image(file_id: str):
             "images_count": len(result.get("images", {})),
             "markdown_length": len(result.get("markdown_text", "")),
             "report_dir": str(report_dir),
-        }
-        processing_history.insert(0, history_item)
-        if len(processing_history) > 200:
-            processing_history.pop()
+        })
 
         return {
             "success": True,
@@ -720,7 +648,7 @@ async def process_image(file_id: str):
 
     except Exception as e:
         logger.error(f"处理失败 [{file_id}]: {e}")
-        history_item = {
+        ts.add_history({
             "id": uuid.uuid4().hex[:8],
             "file_id": file_id,
             "filename": file_path.name,
@@ -728,8 +656,7 @@ async def process_image(file_id: str):
             "success": False,
             "processing_time": 0,
             "error": str(e),
-        }
-        processing_history.insert(0, history_item)
+        })
         raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
 
 
@@ -745,7 +672,6 @@ async def upload_images_batch(files: List[UploadFile] = File(...)):
 
     for file in files:
         try:
-            # 验证类型
             if file.content_type and file.content_type not in allowed_types:
                 results.append({
                     "original_name": file.filename,
@@ -754,7 +680,6 @@ async def upload_images_batch(files: List[UploadFile] = File(...)):
                 })
                 continue
 
-            # 验证大小
             content = await file.read()
             if len(content) > max_size:
                 results.append({
@@ -764,7 +689,6 @@ async def upload_images_batch(files: List[UploadFile] = File(...)):
                 })
                 continue
 
-            # 保存
             upload_path = settings.get_upload_path()
             file_id = uuid.uuid4().hex
             ext = Path(file.filename).suffix if file.filename else ".png"
@@ -807,13 +731,7 @@ async def upload_and_process(file: UploadFile = File(...)):
     upload_result = await upload_image(file)
     if not upload_result.get("success"):
         raise HTTPException(status_code=500, detail="上传失败")
-
-    try:
-        return await process_image(upload_result["file_id"])
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
+    return await process_image(upload_result["file_id"])
 
 
 @app.get("/api/reports")
@@ -857,30 +775,22 @@ async def get_report(report_id: str):
 
 @app.get("/api/report/{report_id}/download")
 async def download_report_zip(report_id: str):
-    """
-    下载报告的 ZIP 包，包含 report.md 和所有图片文件。
-    解压后用 Typora 打开 report.md 即可正常查看。
-    """
+    """下载报告的 ZIP 包"""
     report_dir = settings.get_output_path() / report_id
     md_file = report_dir / "report.md"
 
     if not md_file.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
 
-    # 创建内存中的 ZIP 文件
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        # 添加 report.md
         zf.write(md_file, "report.md")
-
-        # 添加所有图片文件
         image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
         for file_path in report_dir.iterdir():
             if file_path.is_file() and file_path.suffix.lower() in image_extensions:
                 zf.write(file_path, file_path.name)
 
     zip_buffer.seek(0)
-
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
@@ -890,7 +800,7 @@ async def download_report_zip(report_id: str):
 
 @app.post("/api/batch/download")
 async def download_batch_zip(request_data: dict):
-    """批量下载所有报告的 ZIP 包。"""
+    """批量下载所有报告的 ZIP 包"""
     report_ids = request_data.get("report_ids", [])
     if not report_ids:
         raise HTTPException(status_code=400, detail="未提供报告ID列表")
@@ -918,7 +828,7 @@ async def download_batch_zip(request_data: dict):
 
 @app.post("/api/batch/download-layout")
 async def download_batch_layout_report(request_data: dict):
-    """批量版面分析聚合报告 — 仅聚焦版面布局与结构信息。"""
+    """批量版面分析聚合报告"""
     files = request_data.get("files", [])
     if not files:
         raise HTTPException(status_code=400, detail="未提供文件数据")
@@ -1052,7 +962,7 @@ if __name__ == "__main__":
     logger.info(f"  - API Key: {'已配置' if settings.paddleocr_api_key else '未配置'}")
 
     uvicorn.run(
-        "main:app",
+        "backend.main:app",
         host=settings.host,
         port=settings.port,
         reload=settings.debug,
