@@ -189,6 +189,83 @@ QLabel#statusLabel {
     color: #8b95a8;
     font-size: 11px;
 }
+/* ── 可视化配置卡片 ── */
+QFrame#configCard {
+    background-color: #111827;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-left: 3px solid #3b82f6;
+    border-radius: 10px;
+    padding: 20px;
+}
+QFrame#configCardConnected {
+    background-color: #111827;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-left: 3px solid #10b981;
+    border-radius: 10px;
+    padding: 20px;
+}
+QFrame#configCardError {
+    background-color: #111827;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-left: 3px solid #ef4444;
+    border-radius: 10px;
+    padding: 20px;
+}
+QLabel#cardTitle {
+    font-size: 15px;
+    font-weight: 700;
+    color: #e8ecf1;
+    padding: 4px 0;
+}
+QLabel#cardDesc {
+    font-size: 12px;
+    color: #6b7280;
+    padding: 2px 0 8px 0;
+}
+QLabel#badgeSuccess {
+    background-color: rgba(16,185,129,0.15);
+    color: #10b981;
+    border-radius: 10px;
+    padding: 3px 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#badgeWarning {
+    background-color: rgba(245,158,11,0.15);
+    color: #f59e0b;
+    border-radius: 10px;
+    padding: 3px 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#badgeError {
+    background-color: rgba(239,68,68,0.15);
+    color: #ef4444;
+    border-radius: 10px;
+    padding: 3px 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#badgeInfo {
+    background-color: rgba(59,130,246,0.15);
+    color: #3b82f6;
+    border-radius: 10px;
+    padding: 3px 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#testResultSuccess {
+    color: #10b981;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 0;
+}
+QLabel#testResultError {
+    color: #ef4444;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 0;
+}
 QListWidget {
     background-color: #111827;
     border: 1px solid rgba(255,255,255,0.06);
