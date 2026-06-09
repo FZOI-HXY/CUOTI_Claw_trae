@@ -7,7 +7,6 @@
   - 环境变量覆盖
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -67,19 +66,19 @@ class TestSettingsEnvOverride:
     def test_env_var_override_port(self, temp_env):
         temp_env["PORT"] = "9999"
         from config import Settings
-        s = Settings(_env_file="")
+        s = Settings(_env_file="")  # type: ignore[reportCallIssue]
         assert s.port == 9999
 
     def test_env_var_override_host(self, temp_env):
         temp_env["HOST"] = "127.0.0.1"
         from config import Settings
-        s = Settings(_env_file="")
+        s = Settings(_env_file="")  # type: ignore[reportCallIssue]
         assert s.host == "127.0.0.1"
 
     def test_env_var_override_log_level(self, temp_env):
         temp_env["LOG_LEVEL"] = "DEBUG"
         from config import Settings
-        s = Settings(_env_file="")
+        s = Settings(_env_file="")  # type: ignore[reportCallIssue]
         assert s.log_level == "DEBUG"
 
 

@@ -3,12 +3,17 @@
 """
 import os
 from pathlib import Path
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 
 class Settings(BaseSettings):
     """系统配置类"""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
 
     # PaddleOCR API 配置 (百度AI Studio PaddleOCR 官方API)
     # 文档: https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5
@@ -31,10 +36,6 @@ class Settings(BaseSettings):
     # 日志配置
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
     def get_upload_path(self) -> Path:
         path = Path(self.upload_dir)
