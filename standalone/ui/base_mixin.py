@@ -32,7 +32,6 @@ class AppBaseMixin:
 
     # 来自 StandaloneApp
     active_workers: list
-    sync_service: Any
 
     # 来自 upload_mixin
     step_labels: Dict[str, QLabel]
@@ -48,10 +47,6 @@ class AppBaseMixin:
 
     # 来自 config_mixin
     load_config: Any
-
-    # 来自 nas_mixin
-    _refresh_nas_status_info: Any
-    _refresh_nas_browser: Any
 
     # ============ 菜单栏 ============
 
@@ -95,7 +90,7 @@ class AppBaseMixin:
     def setup_statusbar(self):
         sb: QStatusBar = self.statusBar()  # type: ignore[attr-defined]
         assert sb is not None
-        sb.showMessage("就绪 - 请连接后端服务后开始使用")
+        sb.showMessage("就绪 - API Token 已内置，可直接使用")
 
     # ============ 拖拽支持 ============
 
@@ -173,8 +168,6 @@ class AppBaseMixin:
         self.load_reports()
         if self.tab_widget.currentIndex() == 3:
             self.load_config()
-        self._refresh_nas_status_info()
-        self._refresh_nas_browser()
         self.show_toast("已刷新")
 
     def show_about(self):
@@ -183,10 +176,9 @@ class AppBaseMixin:
             "关于 Claw",
             "<h2>Claw 错题管理系统 v1.2.0</h2>"
             "<p>基于 PaddleOCR 的智能错题识别与管理系统</p>"
-            "<p>独立桌面应用程序 - 不依赖前端浏览器</p><hr>"
+            "<p>独立桌面应用程序 - API Token 已内置，开箱即用</p><hr>"
             "<p>功能：拖拽/批量上传 → PP-StructureV3 文档结构化分析 → 报告自动生成</p>"
-            "<p>技术栈：PyQt6 + httpx + PaddleOCR API</p><hr>"
-            "<p>使用前提：请确保后端服务 (main.py) 已启动</p>"
+            "<p>技术栈：PyQt6 + httpx + PaddleOCR API</p>"
         )
 
     # ============ 标签页切换 ============
@@ -198,6 +190,3 @@ class AppBaseMixin:
             self.load_reports()
         elif index == 3:
             self.load_config()
-        elif index == 4:
-            self._refresh_nas_browser()
-            self._refresh_nas_status_info()

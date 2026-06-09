@@ -43,7 +43,6 @@ ENTRY_SCRIPT = "main.py"
 
 # 自动包含的 Python 模块 (相对于 PROJECT_DIR)
 PY_MODULES = [
-    "smb_sync.py",
     "backend_server.py",
     # backend 核心模块（在父目录的 backend/ 下）
     "../backend/config.py",

@@ -4,7 +4,6 @@ UploadTabMixin - 上传处理标签页
 """
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 from typing import List, Dict, Any, TYPE_CHECKING
 
@@ -24,7 +23,6 @@ from standalone.workers.api_task import UploadWorker, SubmitWorker, PollWorker
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QTabWidget, QTableWidget
-    from smb_sync import SmbSyncService
 
 
 class UploadTabMixin:
@@ -39,7 +37,6 @@ class UploadTabMixin:
     batch_results: List[Dict]
     processing: bool
     active_workers: list
-    sync_service: SmbSyncService
 
     # UI 控件引用
     tab_widget: QTabWidget
@@ -70,9 +67,6 @@ class UploadTabMixin:
 
     # 来自 history_mixin
     load_history: Any
-
-    # 来自 nas_mixin
-    _auto_sync_after_process: Any
 
     # ============ 标签页创建 ============
 
@@ -566,13 +560,6 @@ class UploadTabMixin:
             if r["success"]:
                 self._preview_first_result(r["file_id"])
                 break
-
-        if self.sync_service.config.auto_sync and self.sync_service.is_connected():
-            output_dir = Path(__file__).parent.parent / "output"
-            threading.Thread(
-                target=lambda: self._auto_sync_after_process(str(output_dir)),
-                daemon=True,
-            ).start()
 
     def _preview_first_result(self, file_id: str):
         for item in self.file_queue:

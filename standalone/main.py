@@ -8,10 +8,10 @@
   3. 报告管理（列表、查看、下载ZIP、删除）
   4. 处理历史记录
   5. 系统配置管理
-  6. NAS 跨网段数据同步
 
 技术栈: PyQt6 + FastAPI (内嵌) + httpx + markdown
 后端: 内嵌 FastAPI 服务，双击 .exe 即可使用，无需额外启动
+API Token 已内置，开箱即用
 
 模块结构:
   standalone/
@@ -25,7 +25,6 @@
       history_mixin.py - 处理历史记录标签页
       reports_mixin.py - 报告中心标签页
       config_mixin.py  - 系统配置标签页
-      nas_mixin.py     - NAS 同步标签页
 """
 import sys
 from pathlib import Path
@@ -41,9 +40,6 @@ from PyQt6.QtGui import QPalette, QColor
 # 内嵌后端服务
 import backend_server
 
-# SMB NAS 跨网段同步
-from smb_sync import create_default_sync_service
-
 # Modular UI components
 from standalone.style import DARK_STYLE
 from standalone.ui import (
@@ -52,7 +48,6 @@ from standalone.ui import (
     HistoryTabMixin,
     ReportsTabMixin,
     ConfigTabMixin,
-    NasTabMixin,
 )
 
 
@@ -62,7 +57,6 @@ class StandaloneApp(
     HistoryTabMixin,
     ReportsTabMixin,
     ConfigTabMixin,
-    NasTabMixin,
     QMainWindow,
 ):
     """独立桌面应用程序主窗口 - 通过 Mixin 组合所有功能"""
@@ -75,16 +69,6 @@ class StandaloneApp(
         self.processing = False
         self.active_workers: List[QThread] = []
 
-        # ---- NAS 同步服务 ----
-        sync_cache_dir = Path(__file__).parent / "local_cache"
-        self.sync_service = create_default_sync_service(cache_dir=str(sync_cache_dir))
-        self.sync_service.set_on_status(self._on_nas_status_changed)
-        self.sync_service.set_on_sync_complete(self._on_nas_sync_complete)
-
-        # 加载持久化的 NAS 配置
-        self._nas_config_file = Path(__file__).parent / "nas_config.json"
-        self._load_nas_config()
-
         self.setup_ui()
         self.setup_menu()
         self.setup_statusbar()
@@ -92,9 +76,6 @@ class StandaloneApp(
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.check_server_status)
         self.status_timer.start(15000)
-
-        # 尝试连接 NAS（延迟启动，避免阻塞 UI）
-        QTimer.singleShot(2000, self._init_nas_connection)
 
     # ============ UI 搭建 ============
 
@@ -130,16 +111,10 @@ class StandaloneApp(
         self.create_history_tab()
         self.create_reports_tab()
         self.create_config_tab()
-        self.create_nas_sync_tab()
-        self._populate_nas_config_ui()
 
     # ============ 清理 ============
 
     def closeEvent(self, event):
-        # 停止 NAS 同步服务
-        self.sync_service.stop_health_monitor()
-        self.sync_service.disconnect()
-
         # 清理所有活跃线程
         for w in list(self.active_workers):
             if w.isRunning():

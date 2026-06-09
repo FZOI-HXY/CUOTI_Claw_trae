@@ -24,7 +24,9 @@ class Settings(BaseSettings):
     # 文档: https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5
     # API_URL 和 TOKEN 从 https://paddleocr.aistudio-app.com 获取
     paddleocr_api_url: str = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
-    paddleocr_api_key: str = ""  # TOKEN，认证格式: Authorization: bearer {TOKEN}
+    # ⚠️ 安全警告：Token 已硬编码，请替换为你的实际 API Token
+    # 从 https://aistudio.baidu.com/paddleocr/task 获取
+    paddleocr_api_key: str = "your-paddleocr-api-token-here"
     paddleocr_model: str = "PP-StructureV3"  # 模型: PaddleOCR-VL-1.5 / PaddleOCR-VL / PP-StructureV3 / PP-OCRv5
 
     # 服务器配置

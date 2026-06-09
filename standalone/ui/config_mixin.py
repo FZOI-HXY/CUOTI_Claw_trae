@@ -1,6 +1,8 @@
 """
 ConfigTabMixin - 系统配置标签页
 包含: API配置, 服务器配置, 处理参数
+
+注意: PaddleOCR API Token 已硬编码在 backend/config.py 中，开箱即用
 """
 from __future__ import annotations
 
@@ -28,7 +30,6 @@ class ConfigTabMixin:
 
     # 配置控件（由 create_config_tab 创建）
     cfg_api_url: QLineEdit
-    cfg_api_key: QLineEdit
     cfg_model: QComboBox
     cfg_host: QLineEdit
     cfg_port: QSpinBox
@@ -51,16 +52,13 @@ class ConfigTabMixin:
         # API 配置
         api_group = QGroupBox("PaddleOCR API 配置")
         api_form = QFormLayout(api_group)
-        api_hint = QLabel("从 aistudio.baidu.com/paddleocr/task 获取 API_URL 和 TOKEN")
-        api_hint.setStyleSheet("color: #8b95a8; font-size: 11px;")
+        api_hint = QLabel("API Token 已内置在程序中，无需手动配置。以下选项一般保持默认即可。")
+        api_hint.setStyleSheet("color: #10b981; font-size: 11px;")
         api_form.addRow(api_hint)
         self.cfg_api_url = QLineEdit()
-        self.cfg_api_key = QLineEdit()
-        self.cfg_api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.cfg_model = QComboBox()
         self.cfg_model.addItems(["PP-StructureV3", "PaddleOCR-VL-1.5", "PaddleOCR-VL", "PP-OCRv5"])
         api_form.addRow("API 地址:", self.cfg_api_url)
-        api_form.addRow("TOKEN:", self.cfg_api_key)
         api_form.addRow("模型:", self.cfg_model)
 
         api_btn_layout = QHBoxLayout()
@@ -124,8 +122,6 @@ class ConfigTabMixin:
 
     def _on_config_loaded(self, config: dict):
         self.cfg_api_url.setText(config.get("paddleocr_api_url", ""))
-        if config.get("api_key_configured"):
-            self.cfg_api_key.setPlaceholderText(config.get("api_key_prefix", "") + " (已配置)")
         model = config.get("paddleocr_model", "PP-StructureV3")
         idx = self.cfg_model.findText(model)
         if idx >= 0:
@@ -142,8 +138,6 @@ class ConfigTabMixin:
             "paddleocr_api_url": self.cfg_api_url.text(),
             "paddleocr_model": self.cfg_model.currentText(),
         }
-        if self.cfg_api_key.text():
-            data["paddleocr_api_key"] = self.cfg_api_key.text()
         worker = ApiTask(self.api_base, "POST", "/api/config", json_data=data)
         worker.finished.connect(lambda d: self.show_toast("API 配置已保存"))
         worker.error.connect(lambda e: self.show_toast(f"保存失败: {e}"))
