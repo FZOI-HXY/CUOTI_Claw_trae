@@ -19,8 +19,7 @@ import asyncio
 import json
 import time
 import io
-from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 import httpx
 from logger import setup_logger
 
@@ -188,6 +187,8 @@ class PaddleOCRService:
                     result = response.json()
             else:
                 # 方式2: multipart/form-data 上传本地文件
+                # image_data 在此分支必然非空（已在函数入口校验）
+                assert image_data is not None
                 # optionalPayload 在 form-data 中需要是 JSON 字符串
                 data = {
                     "model": self.model,
