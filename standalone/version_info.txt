@@ -1,0 +1,50 @@
+# UTF-8
+#
+# PyInstaller Windows 版本信息文件
+# 语法: https://learn.microsoft.com/en-us/windows/win32/menurc/versioninfo-resource
+#
+
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        "080404b0",
+        [
+          StringStruct("CompanyName",     "IDC Developer"),
+          StringStruct("FileDescription", "Claw - 错题管理系统"),
+          StringStruct("FileVersion",     "1.0.0.0"),
+          StringStruct("InternalName",    "Claw"),
+          StringStruct("LegalCopyright",  "Copyright (c) 2026 IDC. All rights reserved."),
+          StringStruct("OriginalFilename","Claw.exe"),
+          StringStruct("ProductName",     "Claw 错题管理系统"),
+          StringStruct("ProductVersion",  "1.0.0"),
+          StringStruct("Comments",        "独立桌面应用 - 错题OCR识别与报告管理"),
+        ]
+      ),
+      StringTable(
+        "080404b0",
+        [
+          StringStruct("CompanyName",     "IDC Developer"),
+          StringStruct("FileDescription", "Claw - Error Question Management System"),
+          StringStruct("FileVersion",     "1.0.0.0"),
+          StringStruct("InternalName",    "Claw"),
+          StringStruct("LegalCopyright",  "Copyright (c) 2026 IDC. All rights reserved."),
+          StringStruct("OriginalFilename","Claw.exe"),
+          StringStruct("ProductName",     "Claw Error Question Manager"),
+          StringStruct("ProductVersion",  "1.0.0"),
+        ]
+      ),
+    ]),
+    VarFileInfo([VarStruct("Translation", [0x0804, 0x04b0])])
+  ]
+)

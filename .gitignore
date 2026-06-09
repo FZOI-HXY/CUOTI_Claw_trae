@@ -1,0 +1,90 @@
+# ======================================================
+# Claw 错题管理系统 - .gitignore
+# ======================================================
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec
+eggs/
+.eggs/
+*.manifest
+*.spec
+
+# ── Virtual Environment ──
+venv/
+.env
+.venv
+env/
+ENV/
+
+# ── IDE / Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── PyInstaller 构建产物 ──
+standalone/dist/
+standalone/build/
+standalone/*.spec
+standalone/app_icon.ico
+
+# ── 测试报告 ──
+reports/
+htmlcov/
+.coverage
+.coverage.*
+*.cover
+.pytest_cache/
+
+# ── 日志文件 ──
+logs/*.log
+backend/logs/*.log
+standalone/local_cache/
+
+# ── 上传/输出目录（运行时生成） ──
+backend/uploads/*
+backend/output/*
+!backend/uploads/.gitkeep
+!backend/output/.gitkeep
+
+# ── NAS 配置（含密码） ──
+standalone/nas_config.json
+
+# ── 环境配置（含密钥） ──
+backend/.env
+*.env.local
+*.env.production
+
+# ── 临时文件 ──
+*.tmp
+*.temp
+*.bak
+*.cache
+tmp/
+temp/
+~$*
+
+# ── 操作系统 ──
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── 测试输出文件 ──
+markdown_test_result.txt
+test_output.txt
+*_result.txt
+
+# ── 其他 ──
+*.wpr
+*.wpu
