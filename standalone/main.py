@@ -1,6 +1,6 @@
 """
 错题管理系统 - 独立桌面应用程序
-完整复刻前端系统所有功能，不依赖浏览器
+完整复刻前端系统所有功能，内嵌后端服务，不依赖外部进程
 
 功能:
   1. 文件上传与队列管理（拖拽、文件夹、批量）
@@ -8,13 +8,15 @@
   3. 报告管理（列表、查看、下载ZIP、删除）
   4. 处理历史记录
   5. 系统配置管理
+  6. NAS 跨网段数据同步
 
-技术栈: PyQt6 + httpx + markdown
-API后端: 调用 FastAPI 后端 (需单独启动)
+技术栈: PyQt6 + FastAPI (内嵌) + httpx + markdown
+后端: 内嵌 FastAPI 服务，双击 .exe 即可使用，无需额外启动
 """
 import sys
 import os
 import json
+import threading
 import asyncio
 import io
 import base64
@@ -43,6 +45,9 @@ from PyQt6.QtGui import (
 )
 import httpx
 import re
+
+# 内嵌后端服务
+import backend_server
 
 # SMB NAS 跨网段同步
 from smb_sync import (
@@ -269,7 +274,7 @@ class ApiTask(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, api_base: str, method: str, endpoint: str, 
-                 json_data: dict = None, files_data: dict = None, 
+                 json_data: "dict | None" = None, files_data: "dict | None" = None, 
                  raw_response: bool = False):
         super().__init__()
         self.api_base = api_base
@@ -617,7 +622,9 @@ class StandaloneApp(QMainWindow):
         self.history_table.setHorizontalHeaderLabels([
             "编号", "文件名", "时间", "状态", "耗时(s)", "图片数", "操作"
         ])
-        self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header = self.history_table.horizontalHeader()
+        assert header is not None
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.history_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         layout.addWidget(self.history_table)
@@ -642,7 +649,9 @@ class StandaloneApp(QMainWindow):
         self.reports_table.setHorizontalHeaderLabels([
             "报告ID", "创建时间", "包含Markdown", "大小", "操作"
         ])
-        self.reports_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr = self.reports_table.horizontalHeader()
+        assert hdr is not None
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.reports_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.reports_table)
 
@@ -858,7 +867,9 @@ class StandaloneApp(QMainWindow):
         self.nas_browser_table = QTableWidget()
         self.nas_browser_table.setColumnCount(3)
         self.nas_browser_table.setHorizontalHeaderLabels(["报告ID", "文件数", "操作"])
-        self.nas_browser_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr2 = self.nas_browser_table.horizontalHeader()
+        assert hdr2 is not None
+        hdr2.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.nas_browser_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         browser_layout.addWidget(self.nas_browser_table)
 
@@ -942,7 +953,8 @@ class StandaloneApp(QMainWindow):
 
         # 限制日志行数
         cursor = self.nas_log_view.textCursor()
-        cursor.move(QTextCursor.MoveOperation.Start)
+        if cursor is not None:
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
         lines = self.nas_log_view.toPlainText().split("\n")
         if len(lines) > 300:
             new_text = "\n".join(lines[-300:])
@@ -1285,8 +1297,12 @@ class StandaloneApp(QMainWindow):
                 files_synced=0, files_failed=1,
                 details=[f"自动同步失败: {e}"],
             )))
+
+    def setup_menu(self):
         menubar = self.menuBar()
+        assert menubar is not None
         file_menu = menubar.addMenu("文件(&F)")
+        assert file_menu is not None
 
         open_action = QAction("选择文件...", self)
         open_action.setShortcut("Ctrl+O")
@@ -1305,27 +1321,35 @@ class StandaloneApp(QMainWindow):
         file_menu.addAction(exit_action)
 
         tools_menu = menubar.addMenu("工具(&T)")
+        assert tools_menu is not None
         refresh_action = QAction("刷新全部", self)
         refresh_action.setShortcut("F5")
         refresh_action.triggered.connect(self.refresh_all)
         tools_menu.addAction(refresh_action)
 
         help_menu = menubar.addMenu("帮助(&H)")
+        assert help_menu is not None
         about_action = QAction("关于...", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
 
     def setup_statusbar(self):
-        self.statusBar().showMessage("就绪 - 请连接后端服务后开始使用")
+        sb = self.statusBar()
+        assert sb is not None
+        sb.showMessage("就绪 - 请连接后端服务后开始使用")
 
     # ============ 拖拽支持 ============
 
     def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
+        md = event.mimeData()
+        if md is not None and md.hasUrls():
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent):
-        urls = event.mimeData().urls()
+        md = event.mimeData()
+        if md is None:
+            return
+        urls = md.urls()
         files_to_add = []
         for url in urls:
             path = url.toLocalFile()
@@ -1755,8 +1779,10 @@ class StandaloneApp(QMainWindow):
         # 清空并重建统计网格
         for i in reversed(range(self.stats_grid.count())):
             widget = self.stats_grid.itemAt(i)
-            if widget and widget.widget():
-                widget.widget().deleteLater()
+            if widget:
+                w = widget.widget()
+                if w is not None:
+                    w.deleteLater()
 
         stats_data = [
             (str(total), "文件总数"),
@@ -1777,8 +1803,10 @@ class StandaloneApp(QMainWindow):
     def _clear_stats(self):
         for i in reversed(range(self.stats_grid.count())):
             widget = self.stats_grid.itemAt(i)
-            if widget and widget.widget():
-                widget.widget().deleteLater()
+            if widget:
+                w = widget.widget()
+                if w is not None:
+                    w.deleteLater()
 
     # ============ Markdown 渲染 ============
 
@@ -1835,7 +1863,9 @@ class StandaloneApp(QMainWindow):
         """复制 Markdown 内容"""
         text = self.markdown_view.toPlainText()
         if text:
-            QApplication.clipboard().setText(text)
+            cb = QApplication.clipboard()
+            if cb is not None:
+                cb.setText(text)
             self.show_toast("已复制到剪贴板")
 
     # ============ 历史记录 ============
@@ -1843,7 +1873,7 @@ class StandaloneApp(QMainWindow):
     def load_history(self):
         worker = ApiTask(self.api_base, "GET", "/api/history?limit=100")
         worker.finished.connect(self._on_history_loaded)
-        worker.error.connect(lambda e: self.statusBar().showMessage(f"加载历史失败: {e}"))
+        worker.error.connect(lambda e: self._show_status(f"加载历史失败: {e}"))
         worker.start()
 
     def _on_history_loaded(self, data: dict):
@@ -1893,7 +1923,7 @@ class StandaloneApp(QMainWindow):
     def load_reports(self):
         worker = ApiTask(self.api_base, "GET", "/api/reports?limit=100")
         worker.finished.connect(self._on_reports_loaded)
-        worker.error.connect(lambda e: self.statusBar().showMessage(f"加载报告失败: {e}"))
+        worker.error.connect(lambda e: self._show_status(f"加载报告失败: {e}"))
         worker.start()
 
     def _on_reports_loaded(self, data: dict):
@@ -2007,7 +2037,7 @@ class StandaloneApp(QMainWindow):
     def load_config(self):
         worker = ApiTask(self.api_base, "GET", "/api/config")
         worker.finished.connect(self._on_config_loaded)
-        worker.error.connect(lambda e: self.statusBar().showMessage(f"加载配置失败: {e}"))
+        worker.error.connect(lambda e: self._show_status(f"加载配置失败: {e}"))
         worker.start()
 
     def _on_config_loaded(self, config: dict):
@@ -2116,7 +2146,16 @@ class StandaloneApp(QMainWindow):
         return f"{bytes_val / (1024 * 1024):.1f} MB"
 
     def show_toast(self, message: str):
-        self.statusBar().showMessage(message, 4000)
+        self._show_status(message, 4000)
+
+    def _show_status(self, message: str, timeout: int = 0):
+        """状态栏消息（安全访问 Optional[QStatusBar]）"""
+        sb = self.statusBar()
+        if sb is not None:
+            if timeout > 0:
+                sb.showMessage(message, timeout)
+            else:
+                sb.showMessage(message)
 
     def _safe_remove_worker(self, worker):
         if worker in self.active_workers:
@@ -2172,6 +2211,23 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Claw-Desktop")
     app.setOrganizationName("ClawTeam")
+
+    # --- 启动内嵌后端服务 ---
+    print("[Claw] 正在启动内嵌后端服务...")
+    if not backend_server.start_server(host="127.0.0.1", port=8500):
+        QMessageBox.critical(
+            None, "启动失败",
+            "内嵌后端服务启动超时，请检查以下可能原因：\n"
+            "1. 端口 8500 被其他程序占用\n"
+            "2. 缺少必要的依赖 (uvicorn, fastapi 等)\n"
+            "3. 配置文件 .env 读写权限异常"
+        )
+        backend_server.stop_server()
+        sys.exit(1)
+    print("[Claw] 后端服务已就绪")
+
+    # 注册退出清理
+    app.aboutToQuit.connect(backend_server.stop_server)
 
     # 暗色 Palette
     palette = QPalette()

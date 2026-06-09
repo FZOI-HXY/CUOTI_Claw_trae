@@ -8,10 +8,15 @@ from typing import Optional
 
 
 class Settings(BaseSettings):
-    """系统配置类"""
+    """系统配置类
+
+    支持的环境变量（用于 standalone 内嵌模式）:
+      CLAW_ENV_FILE: 覆盖 .env 文件路径
+      CLAW_DATA_DIR:  覆盖 upload/output/log 目录的根路径
+    """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.environ.get("CLAW_ENV_FILE", ".env"),
         env_file_encoding="utf-8",
     )
 
@@ -37,18 +42,25 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+    def _resolve_path(self, dir_path: str) -> Path:
+        """解析路径，支持 CLAW_DATA_DIR 环境变量作为根目录"""
+        data_root = os.environ.get("CLAW_DATA_DIR", "")
+        if data_root and not os.path.isabs(dir_path):
+            return Path(data_root) / dir_path.lstrip("./")
+        return Path(dir_path)
+
     def get_upload_path(self) -> Path:
-        path = Path(self.upload_dir)
+        path = self._resolve_path(self.upload_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def get_output_path(self) -> Path:
-        path = Path(self.output_dir)
+        path = self._resolve_path(self.output_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def get_log_path(self) -> Path:
-        path = Path(self.log_dir)
+        path = self._resolve_path(self.log_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
 

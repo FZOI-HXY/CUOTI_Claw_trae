@@ -44,10 +44,18 @@ ENTRY_SCRIPT = "main.py"
 # 自动包含的 Python 模块 (相对于 PROJECT_DIR)
 PY_MODULES = [
     "smb_sync.py",
+    "backend_server.py",
+    # backend 核心模块（在父目录的 backend/ 下）
+    "../backend/config.py",
+    "../backend/logger.py",
+    "../backend/paddle_service.py",
+    "../backend/markdown_generator.py",
+    "../backend/main.py",
 ]
 
 # 需要作为数据文件打包的路径 (相对 PROJECT_DIR)
 DATA_FILES: list[tuple[str, str]] = [
+    ("../frontend", "frontend"),    # Web 前端静态文件
     # ("local_cache", "local_cache"),  # 离线缓存目录
 ]
 
@@ -70,6 +78,31 @@ PYQT6_HIDDEN_IMPORTS = [
     "PyQt6.QtWidgets",
     "PyQt6.QtNetwork",
     "PyQt6.sip",
+]
+
+# 内嵌后端需要显式导入的隐藏模块
+BACKEND_HIDDEN_IMPORTS = [
+    "uvicorn",
+    "uvicorn.logging",
+    "uvicorn.loops",
+    "uvicorn.loops.auto",
+    "uvicorn.protocols",
+    "uvicorn.protocols.http",
+    "uvicorn.protocols.http.auto",
+    "uvicorn.protocols.websockets",
+    "uvicorn.protocols.websockets.auto",
+    "uvicorn.lifespan",
+    "uvicorn.lifespan.on",
+    "fastapi",
+    "starlette",
+    "starlette.routing",
+    "starlette.middleware",
+    "starlette.staticfiles",
+    "pydantic",
+    "pydantic_settings",
+    "aiofiles",
+    "python_multipart",
+    "multipart",
 ]
 
 # 必须收集完整子模块的包 (含二进制插件)
@@ -136,10 +169,6 @@ EXCLUDE_MODULES = [
     "asyncio",
     "aiohttp",
     "websockets",
-    "uvicorn",
-    "fastapi",
-    "starlette",
-    "pydantic",
 ]
 
 
@@ -190,6 +219,11 @@ def check_dependencies():
         "PyQt6": "PyQt6",
         "httpx": "httpx",
         "PIL": "Pillow",
+        "uvicorn": "uvicorn",
+        "fastapi": "fastapi",
+        "pydantic_settings": "pydantic-settings",
+        "aiofiles": "aiofiles",
+        "python_multipart": "python-multipart",
     }
     missing: list[str] = []
     for import_name, pip_name in deps.items():
@@ -306,6 +340,8 @@ def get_pyinstaller_args(windowed: bool = True) -> list[str]:
 
     # === 隐藏导入 ===
     for mod in PYQT6_HIDDEN_IMPORTS:
+        args.extend(["--hidden-import", mod])
+    for mod in BACKEND_HIDDEN_IMPORTS:
         args.extend(["--hidden-import", mod])
 
     # === 收集子模块 (确保 Qt 平台插件被包含) ===
