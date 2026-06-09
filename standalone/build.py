@@ -307,7 +307,6 @@ def get_pyinstaller_args(windowed: bool = True) -> list[str]:
     args.extend([str(ENTRY_SCRIPT)])
 
     # 显式声明隐藏导入 (确保模块被打包)
-    # 注意: smb_sync.py 会被 main.py 的 import 自动检测，这里用 hidden-import 加固
     for mod in PY_MODULES:
         mod_name = mod.replace(".py", "")
         args.extend(["--hidden-import", mod_name])

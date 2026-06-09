@@ -27,7 +27,6 @@ API Token 已内置，开箱即用
       config_mixin.py  - 系统配置标签页
 """
 import sys
-from pathlib import Path
 from typing import List, Dict
 
 from PyQt6.QtWidgets import (
