@@ -13,7 +13,26 @@ from PyQt6.QtCore import QThread, pyqtSignal
 import httpx
 
 
-class ApiTask(QThread):
+class _SelfPreservingThread(QThread):
+    """QThread 基类：防止 Python GC 在运行中回收实例"""
+
+    _active_instances: "set[_SelfPreservingThread]" = set()
+
+    def __init__(self):
+        super().__init__()
+        _SelfPreservingThread._active_instances.add(self)
+
+    def run(self):
+        try:
+            self._do_run()
+        finally:
+            _SelfPreservingThread._active_instances.discard(self)
+
+    def _do_run(self):
+        raise NotImplementedError
+
+
+class ApiTask(_SelfPreservingThread):
     """通用 API 异步调用线程"""
     finished = pyqtSignal(object)  # response data
     error = pyqtSignal(str)
@@ -29,7 +48,7 @@ class ApiTask(QThread):
         self.files_data = files_data
         self.raw_response = raw_response
 
-    def run(self):
+    def _do_run(self):
         try:
             async def _do():
                 async with httpx.AsyncClient(timeout=600.0) as client:
@@ -60,7 +79,7 @@ class ApiTask(QThread):
             self.error.emit(str(e))
 
 
-class UploadWorker(QThread):
+class UploadWorker(_SelfPreservingThread):
     """文件上传工作线程"""
     finished = pyqtSignal(dict)  # {index, file_id, ...}
     error = pyqtSignal(int, str)  # index, error
@@ -71,7 +90,7 @@ class UploadWorker(QThread):
         self.file_path = file_path
         self.index = index
 
-    def run(self):
+    def _do_run(self):
         try:
             async def _do():
                 async with httpx.AsyncClient(timeout=120.0) as client:
@@ -91,7 +110,7 @@ class UploadWorker(QThread):
             self.error.emit(self.index, str(e))
 
 
-class SubmitWorker(QThread):
+class SubmitWorker(_SelfPreservingThread):
     """提交异步 OCR 任务工作线程"""
     finished = pyqtSignal(dict)
     error = pyqtSignal(int, str)
@@ -102,7 +121,7 @@ class SubmitWorker(QThread):
         self.file_id = file_id
         self.index = index
 
-    def run(self):
+    def _do_run(self):
         try:
             async def _do():
                 async with httpx.AsyncClient(timeout=60.0) as client:
@@ -120,7 +139,7 @@ class SubmitWorker(QThread):
             self.error.emit(self.index, str(e))
 
 
-class PollWorker(QThread):
+class PollWorker(_SelfPreservingThread):
     """轮询任务状态工作线程"""
     finished = pyqtSignal(list)  # [{index, data, error}]
     error = pyqtSignal(str)
@@ -131,7 +150,7 @@ class PollWorker(QThread):
         self.tasks = tasks
         self.index_map = index_map
 
-    def run(self):
+    def _do_run(self):
         try:
             async def _poll_one(client, task_id, idx):
                 try:

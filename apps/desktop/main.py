@@ -69,22 +69,31 @@ class StandaloneApp(
         self.active_workers: List[QThread] = []
 
         self.setup_ui()
+        print("  [INIT] setup_menu...", flush=True)
         self.setup_menu()
+        print("  [INIT] setup_statusbar...", flush=True)
         self.setup_statusbar()
+        print("  [INIT] check_server_status...", flush=True)
         self.check_server_status()
+        print("  [INIT] QTimer...", flush=True)
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.check_server_status)
         self.status_timer.start(15000)
+        print("  [INIT] __init__ 完成", flush=True)
 
     # ============ UI 搭建 ============
 
     def setup_ui(self):
+        print("  [UI] 设置窗口属性...", flush=True)
         self.setWindowTitle("Claw - 错题管理系统")
         self.setMinimumSize(1280, 800)
         self.resize(1400, 880)
         self.setAcceptDrops(True)
+
+        print("  [UI] 应用样式表...", flush=True)
         self.setStyleSheet(DARK_STYLE)
 
+        print("  [UI] 创建中央组件和布局...", flush=True)
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
@@ -92,6 +101,7 @@ class StandaloneApp(
         main_layout.setSpacing(12)
 
         # 标题栏
+        print("  [UI] 标题栏...", flush=True)
         title_layout = QHBoxLayout()
         title = QLabel("Claw 错题管理系统")
         title.setStyleSheet("font-size: 20px; font-weight: 700; color: #f59e0b;")
@@ -103,13 +113,19 @@ class StandaloneApp(
         main_layout.addLayout(title_layout)
 
         # 标签页
+        print("  [UI] 标签页容器...", flush=True)
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
 
+        print("  [UI] 创建上传标签页...", flush=True)
         self.create_upload_tab()
+        print("  [UI] 创建历史标签页...", flush=True)
         self.create_history_tab()
+        print("  [UI] 创建报告标签页...", flush=True)
         self.create_reports_tab()
+        print("  [UI] 创建配置标签页...", flush=True)
         self.create_config_tab()
+        print("  [UI] setup_ui 完成", flush=True)
 
     # ============ 清理 ============
 
@@ -127,8 +143,11 @@ def main():
     app.setApplicationName("Claw-Desktop")
     app.setOrganizationName("ClawTeam")
 
+    # --- 诊断：检查 Qt 插件路径 ---
+    print(f"[Claw] Qt plugin path: {app.libraryPaths()}", flush=True)
+
     # --- 启动内嵌后端服务 ---
-    print("[Claw] 正在启动内嵌后端服务...")
+    print("[Claw] 正在启动内嵌后端服务...", flush=True)
     if not backend_server.start_server(host="127.0.0.1", port=8500):
         QMessageBox.critical(
             None, "启动失败",
@@ -139,12 +158,13 @@ def main():
         )
         backend_server.stop_server()
         sys.exit(1)
-    print("[Claw] 后端服务已就绪")
+    print("[Claw] 后端服务已就绪", flush=True)
 
     # 注册退出清理
     app.aboutToQuit.connect(backend_server.stop_server)
 
     # 暗色 Palette
+    print("[Claw] 设置样式...", flush=True)
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor("#0a0e17"))
     palette.setColor(QPalette.ColorRole.WindowText, QColor("#e8ecf1"))
@@ -159,14 +179,26 @@ def main():
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#0a0e17"))
     app.setPalette(palette)
 
-    window = StandaloneApp()
+    print("[Claw] 创建主窗口...", flush=True)
+    try:
+        window = StandaloneApp()
+        print("[Claw] 主窗口已创建", flush=True)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        QMessageBox.critical(None, "窗口错误", f"创建主窗口失败:\n{e}")
+        backend_server.stop_server()
+        sys.exit(1)
+
     # 连接标签页切换
     window.tab_widget.currentChanged.connect(window.tab_changed)
+    print("[Claw] 显示窗口...", flush=True)
     window.show()
 
     # 启动时加载数据
     QTimer.singleShot(500, window.refresh_all)
 
+    print("[Claw] 进入事件循环", flush=True)
     sys.exit(app.exec())
 
 

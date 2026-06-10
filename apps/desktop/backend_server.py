@@ -100,10 +100,18 @@ def start_server(host: str = "127.0.0.1", port: int = 8500) -> bool:
     _setup_environment(data_dir)
     _ensure_env_file(data_dir)
 
-    # 2. 导入 FastAPI 应用（此时 Settings 会读取正确的 .env 路径）
+    # 2. PyInstaller --windowed 模式下 sys.stdout/stderr 为 None，
+    #    uvicorn 日志初始化会调用 .isatty()，导致 AttributeError。
+    #    此处将 None 重定向到日志文件以兼容。
+    if sys.stdout is None:
+        sys.stdout = open(os.path.join(data_dir, "server_stdout.log"), "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.path.join(data_dir, "server_stderr.log"), "w")
+
+    # 3. 导入 FastAPI 应用（此时 Settings 会读取正确的 .env 路径）
     from apps.web.api.main import app  # noqa: E402 — 须在 _setup_environment 之后
 
-    # 3. 创建并启动服务器
+    # 4. 创建并启动服务器
     config = uvicorn.Config(
         app,
         host=host,
@@ -116,7 +124,7 @@ def start_server(host: str = "127.0.0.1", port: int = 8500) -> bool:
     _server_thread = threading.Thread(target=_server.run, daemon=True)
     _server_thread.start()
 
-    # 4. 等待就绪
+    # 5. 等待就绪
     health_url = f"http://{host}:{port}/api/health"
     return _wait_for_server(health_url, timeout=10)
 
