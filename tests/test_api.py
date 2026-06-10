@@ -27,8 +27,8 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 import pytest
 from fastapi.testclient import TestClient
 
-# 确保 backend 路径在最前面 (standalone/main.py 也在 path 中会导致冲突)
-_backend_path = str(Path(__file__).parent.parent / "backend")
+# 确保 backend 路径在最前面
+_backend_path = str(Path(__file__).parent.parent / "apps" / "web" / "api")
 if _backend_path in sys.path:
     sys.path.remove(_backend_path)
 sys.path.insert(0, _backend_path)

@@ -1,0 +1,174 @@
+"""
+错题管理系统 - 独立桌面应用程序
+完整复刻前端系统所有功能，内嵌后端服务，不依赖外部进程
+
+功能:
+  1. 文件上传与队列管理（拖拽、文件夹、批量）
+  2. 批量 OCR 处理（提交→轮询→结果）
+  3. 报告管理（列表、查看、下载ZIP、删除）
+  4. 处理历史记录
+  5. 系统配置管理
+
+技术栈: PyQt6 + FastAPI (内嵌) + httpx + markdown
+后端: 内嵌 FastAPI 服务，双击 .exe 即可使用，无需额外启动
+API Token 已内置，开箱即用
+
+模块结构:
+  standalone/
+    main.py          - 入口 + StandaloneApp 主窗口（继承所有 Mixin）
+    style.py         - 暗色主题样式表 DARK_STYLE
+    utils.py         - 工具函数 (render_markdown_html, format_size)
+    workers/         - 异步 API 工作线程
+    ui/              - UI Mixin 模块
+      base_mixin.py    - 基础功能（菜单、状态栏、拖拽、步骤指示器）
+      upload_mixin.py  - 上传处理标签页 + 批量处理流程
+      history_mixin.py - 处理历史记录标签页
+      reports_mixin.py - 报告中心标签页
+      config_mixin.py  - 系统配置标签页
+"""
+import sys
+from typing import List, Dict
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QMessageBox, QTabWidget,
+)
+from PyQt6.QtCore import QThread, QTimer
+from PyQt6.QtGui import QPalette, QColor
+
+# 内嵌后端服务
+import backend_server
+
+# Modular UI components
+from apps.desktop.style import DARK_STYLE
+from apps.desktop.ui import (
+    AppBaseMixin,
+    UploadTabMixin,
+    HistoryTabMixin,
+    ReportsTabMixin,
+    ConfigTabMixin,
+)
+
+
+class StandaloneApp(
+    AppBaseMixin,
+    UploadTabMixin,
+    HistoryTabMixin,
+    ReportsTabMixin,
+    ConfigTabMixin,
+    QMainWindow,
+):
+    """独立桌面应用程序主窗口 - 通过 Mixin 组合所有功能"""
+
+    def __init__(self):
+        QMainWindow.__init__(self)
+        self.api_base = "http://127.0.0.1:8500"
+        self.file_queue: List[Dict] = []           # [{path, name, size, status, file_id, task_id, result}]
+        self.batch_results: List[Dict] = []        # 批量处理结果
+        self.processing = False
+        self.active_workers: List[QThread] = []
+
+        self.setup_ui()
+        self.setup_menu()
+        self.setup_statusbar()
+        self.check_server_status()
+        self.status_timer = QTimer()
+        self.status_timer.timeout.connect(self.check_server_status)
+        self.status_timer.start(15000)
+
+    # ============ UI 搭建 ============
+
+    def setup_ui(self):
+        self.setWindowTitle("Claw - 错题管理系统")
+        self.setMinimumSize(1280, 800)
+        self.resize(1400, 880)
+        self.setAcceptDrops(True)
+        self.setStyleSheet(DARK_STYLE)
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(16, 12, 16, 12)
+        main_layout.setSpacing(12)
+
+        # 标题栏
+        title_layout = QHBoxLayout()
+        title = QLabel("Claw 错题管理系统")
+        title.setStyleSheet("font-size: 20px; font-weight: 700; color: #f59e0b;")
+        title_layout.addWidget(title)
+        title_layout.addStretch()
+        self.server_status_label = QLabel("检查服务器状态...")
+        self.server_status_label.setObjectName("statusLabel")
+        title_layout.addWidget(self.server_status_label)
+        main_layout.addLayout(title_layout)
+
+        # 标签页
+        self.tab_widget = QTabWidget()
+        main_layout.addWidget(self.tab_widget)
+
+        self.create_upload_tab()
+        self.create_history_tab()
+        self.create_reports_tab()
+        self.create_config_tab()
+
+    # ============ 清理 ============
+
+    def closeEvent(self, event):
+        # 清理所有活跃线程
+        for w in list(self.active_workers):
+            if w.isRunning():
+                w.quit()
+                w.wait(1000)
+        event.accept()
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("Claw-Desktop")
+    app.setOrganizationName("ClawTeam")
+
+    # --- 启动内嵌后端服务 ---
+    print("[Claw] 正在启动内嵌后端服务...")
+    if not backend_server.start_server(host="127.0.0.1", port=8500):
+        QMessageBox.critical(
+            None, "启动失败",
+            "内嵌后端服务启动超时，请检查以下可能原因：\n"
+            "1. 端口 8500 被其他程序占用\n"
+            "2. 缺少必要的依赖 (uvicorn, fastapi 等)\n"
+            "3. 配置文件 .env 读写权限异常"
+        )
+        backend_server.stop_server()
+        sys.exit(1)
+    print("[Claw] 后端服务已就绪")
+
+    # 注册退出清理
+    app.aboutToQuit.connect(backend_server.stop_server)
+
+    # 暗色 Palette
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#0a0e17"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#e8ecf1"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#111827"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#1a2235"))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#1a2235"))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#e8ecf1"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#e8ecf1"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#1a2235"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#e8ecf1"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#f59e0b"))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#0a0e17"))
+    app.setPalette(palette)
+
+    window = StandaloneApp()
+    # 连接标签页切换
+    window.tab_widget.currentChanged.connect(window.tab_changed)
+    window.show()
+
+    # 启动时加载数据
+    QTimer.singleShot(500, window.refresh_all)
+
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

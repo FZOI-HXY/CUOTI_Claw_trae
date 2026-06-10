@@ -3,7 +3,7 @@
   "exclude": ["dist", "build", "__pycache__", ".git"],
   "pythonVersion": "3.10",
   "typeCheckingMode": "basic",
-  "extraPaths": ["backend", "standalone", "desktop"],
+  "extraPaths": ["apps/web/api", "apps/desktop"],
   "reportUnusedCallResult": false,
   "reportAny": false,
   "reportUnknownMemberType": false

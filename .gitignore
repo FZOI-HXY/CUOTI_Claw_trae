@@ -35,10 +35,10 @@ ENV/
 Thumbs.db
 
 # ── PyInstaller 构建产物 ──
-standalone/dist/
-standalone/build/
-standalone/*.spec
-standalone/app_icon.ico
+apps/desktop/dist/
+apps/desktop/build/
+apps/desktop/*.spec
+apps/desktop/app_icon.ico
 
 # ── 测试报告 ──
 reports/
@@ -50,20 +50,26 @@ htmlcov/
 
 # ── 日志文件 ──
 logs/*.log
-backend/logs/*.log
-standalone/local_cache/
+apps/web/api/logs/*.log
+apps/desktop/local_cache/
 
 # ── 上传/输出目录（运行时生成） ──
-backend/uploads/*
-backend/output/*
-!backend/uploads/.gitkeep
-!backend/output/.gitkeep
+data/uploads/*
+data/output/*
+data/logs/*
+!data/uploads/.gitkeep
+!data/output/.gitkeep
+!data/logs/.gitkeep
+apps/web/api/uploads/*
+apps/web/api/output/*
+!apps/web/api/uploads/.gitkeep
+!apps/web/api/output/.gitkeep
 
 # ── NAS 配置（含密码） ──
-standalone/nas_config.json
+apps/desktop/nas_config.json
 
 # ── 环境配置（含密钥） ──
-backend/.env
+apps/web/api/.env
 *.env.local
 *.env.production
 

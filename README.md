@@ -8,21 +8,38 @@
 
 ```
 Claw/
-├── backend/                 # 后端服务 (FastAPI)
-│   ├── main.py             # FastAPI 主服务
-│   ├── config.py           # 配置管理
-│   ├── logger.py           # 日志系统
-│   ├── paddle_service.py   # PaddleOCR API 服务
-│   ├── markdown_generator.py # Markdown报告生成
-│   ├── .env                # 环境配置
-│   └── requirements.txt    # Python依赖
-├── frontend/               # Web前端
-│   ├── index.html          # 主页面
-│   ├── styles.css          # 样式表
-│   └── app.js              # 前端逻辑
-├── desktop/                # PyQt6 桌面客户端
-│   ├── main.py             # 桌面管理控制台
-│   └── requirements.txt    # Python依赖
+├── apps/
+│   ├── web/                    # Web 应用
+│   │   ├── api/                # FastAPI 后端服务
+│   │   │   ├── main.py
+│   │   │   ├── config.py
+│   │   │   ├── logger.py
+│   │   │   ├── paddle_service.py
+│   │   │   ├── markdown_generator.py
+│   │   │   ├── services/
+│   │   │   ├── models/
+│   │   │   ├── requirements.txt
+│   │   │   └── .env
+│   │   └── frontend/           # Web 前端
+│   │       ├── index.html
+│   │       ├── styles.css
+│   │       └── app.js
+│   └── desktop/                # PyQt6 桌面客户端
+│       ├── main.py
+│       ├── style.py
+│       ├── utils.py
+│       ├── backend_server.py
+│       ├── build.py
+│       ├── ui/
+│       └── workers/
+├── data/                       # 运行时数据目录
+│   ├── uploads/
+│   ├── output/
+│   └── logs/
+├── tests/                      # 测试套件
+├── docs/                       # 文档
+│   ├── DEPLOY.md
+│   └── USAGE.md
 └── README.md
 ```
 
@@ -37,19 +54,19 @@ Claw/
 
 **后端服务：**
 ```bash
-cd backend
+cd apps/web/api
 pip install -r requirements.txt
 ```
 
 **桌面客户端（可选）：**
 ```bash
-cd desktop
+cd apps/desktop
 pip install -r requirements.txt
 ```
 
 ### 3. 配置 API 密钥
 
-编辑 `backend/.env` 文件：
+编辑 `apps/web/api/.env` 文件：
 
 ```env
 PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
@@ -62,7 +79,7 @@ PADDLEOCR_MODEL=PP-StructureV3
 ### 4. 启动后端服务
 
 ```bash
-cd backend
+cd apps/web/api
 python main.py
 ```
 
@@ -75,7 +92,7 @@ python main.py
 ### 6. 启动桌面客户端（可选）
 
 ```bash
-cd desktop
+cd apps/desktop
 python main.py
 ```
 
@@ -145,9 +162,9 @@ python main.py
 
 ## 目录结构
 
-- `uploads/` - 上传的原始图片
-- `output/` - 生成的报告（按时间戳分目录）
-- `logs/` - 系统日志文件
+- `data/uploads/` - 上传的原始图片
+- `data/output/` - 生成的报告（按时间戳分目录）
+- `data/logs/` - 系统日志文件
 
 每个报告目录包含：
 - `report.md` - 结构化Markdown报告

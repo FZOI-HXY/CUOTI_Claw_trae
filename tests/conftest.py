@@ -20,11 +20,11 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
-# 将项目根目录加入 Python 路径 (backend 优先于 standalone，避免 main 模块冲突)
+# 将项目根目录加入 Python 路径
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "standalone"))
-sys.path.insert(0, str(PROJECT_ROOT / "backend"))
+sys.path.insert(0, str(PROJECT_ROOT / "apps" / "desktop"))
+sys.path.insert(0, str(PROJECT_ROOT / "apps" / "web" / "api"))
 
 
 # ──────────────────────────────────────────────────
