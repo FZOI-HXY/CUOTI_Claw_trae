@@ -41,15 +41,36 @@ PROJECT_DIR = Path(__file__).resolve().parent
 # 入口文件 (相对于 PROJECT_DIR)
 ENTRY_SCRIPT = "main.py"
 
-# 自动包含的 Python 模块 (相对于 PROJECT_DIR)
+# 自动包含的 Python 模块 (Python import 名称，非文件路径)
 PY_MODULES = [
-    "backend_server.py",
-    # backend 核心模块（在上层目录的 apps/web/api/ 下）
-    "../../apps/web/api/config.py",
-    "../../apps/web/api/logger.py",
-    "../../apps/web/api/paddle_service.py",
-    "../../apps/web/api/markdown_generator.py",
-    "../../apps/web/api/main.py",
+    "backend_server",
+    # backend 核心模块
+    "apps.web.api.config",
+    "apps.web.api.logger",
+    "apps.web.api.paddle_service",
+    "apps.web.api.markdown_generator",
+    "apps.web.api.main",
+    # backend 子包
+    "apps.web.api.services",
+    "apps.web.api.services.task_service",
+    "apps.web.api.services.config_service",
+    "apps.web.api.services.paddle_parser",
+    "apps.web.api.models",
+    "apps.web.api.models.schemas",
+    # desktop 子包
+    "apps.desktop.style",
+    "apps.desktop.utils",
+    "apps.desktop.ui",
+    "apps.desktop.ui.base_mixin",
+    "apps.desktop.ui.upload_mixin",
+    "apps.desktop.ui.history_mixin",
+    "apps.desktop.ui.reports_mixin",
+    "apps.desktop.ui.config_mixin",
+    "apps.desktop.workers",
+    "apps.desktop.workers.api_task",
+    # uvicorn / FastAPI 隐式依赖 (PyInstaller 经常漏掉)
+    "click",
+    "h11",
 ]
 
 # 需要作为数据文件打包的路径 (相对 PROJECT_DIR)
@@ -128,7 +149,6 @@ EXCLUDE_MODULES = [
     "site",
     "lib2to3",
     "xmlrpc",
-    "multiprocessing",
     "concurrent.futures.process",
     "curses",
     "dbm",
@@ -147,7 +167,6 @@ EXCLUDE_MODULES = [
     "jinja2",
     "markupsafe",
     "werkzeug",
-    "click",
     "itsdangerous",
     "bcrypt",
     "cryptography",
@@ -163,11 +182,7 @@ EXCLUDE_MODULES = [
     "beautifulsoup4",
     "scrapy",
     "pygame",
-    "cffi",
-    "ctypes",
-    "asyncio",
     "aiohttp",
-    "websockets",
 ]
 
 
@@ -242,6 +257,12 @@ def check_dependencies():
 
 def find_upx() -> str | None:
     """自动查找 UPX 可执行文件"""
+    # 优先从 PATH 中找
+    from_path = shutil.which("upx")
+    if from_path:
+        log(f"UPX found: {from_path}")
+        return str(Path(from_path).parent)
+    # 否则扫描常见目录
     paths = [
         Path(r"C:\upx"),
         Path(r"C:\Program Files\upx"),
@@ -306,10 +327,13 @@ def get_pyinstaller_args(windowed: bool = True) -> list[str]:
     # === 基本设置 ===
     args.extend([str(ENTRY_SCRIPT)])
 
+    # 将项目根目录加入搜索路径，使 PyInstaller 能解析 apps.web.api 等包
+    project_root = str(PROJECT_DIR.parent.parent.resolve())
+    args.extend(["--paths", project_root])
+
     # 显式声明隐藏导入 (确保模块被打包)
     for mod in PY_MODULES:
-        mod_name = mod.replace(".py", "")
-        args.extend(["--hidden-import", mod_name])
+        args.extend(["--hidden-import", mod])
 
     # === 输出设置 ===
     args.extend(["--name", APP_NAME])
@@ -334,7 +358,8 @@ def get_pyinstaller_args(windowed: bool = True) -> list[str]:
     # === 数据文件 ===
     for src, dst in DATA_FILES:
         sep = ";" if sys.platform == "win32" else ":"
-        args.extend(["--add-data", f"{src}{sep}{dst}"])
+        abs_src = str((PROJECT_DIR / src).resolve())
+        args.extend(["--add-data", f"{abs_src}{sep}{dst}"])
 
     # === 隐藏导入 ===
     for mod in PYQT6_HIDDEN_IMPORTS:
