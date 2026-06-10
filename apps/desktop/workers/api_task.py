@@ -13,6 +13,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 import httpx
 
 
+import traceback as _traceback
+
 class _SelfPreservingThread(QThread):
     """QThread 基类：防止 Python GC 在运行中回收实例"""
 
@@ -25,6 +27,8 @@ class _SelfPreservingThread(QThread):
     def run(self):
         try:
             self._do_run()
+        except Exception:
+            _traceback.print_exc()
         finally:
             _SelfPreservingThread._active_instances.discard(self)
 

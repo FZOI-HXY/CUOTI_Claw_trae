@@ -349,7 +349,7 @@ class UploadTabMixin:
         worker.finished.connect(self._on_upload_done)
         worker.error.connect(self._on_upload_error)
         self.active_workers.append(worker)
-        worker.finished.connect(lambda: self.active_workers.remove(worker))
+        worker.finished.connect(lambda w=worker: self._safe_remove_worker(w))
         worker.start()
 
     def _on_upload_done(self, data: dict):
@@ -398,6 +398,7 @@ class UploadTabMixin:
             worker.error.connect(self._on_submit_error)
             self.active_workers.append(worker)
             worker.finished.connect(lambda w=worker: self._safe_remove_worker(w))
+            worker.start()
 
         self.render_queue()
         self._check_submit_done(total)
@@ -476,7 +477,11 @@ class UploadTabMixin:
 
     def _on_poll_done(self, results: list):
         for r in results:
-            idx = r["index"]
+            idx = r.get("index")
+            if idx is None:
+                continue
+            if idx >= len(self.file_queue):
+                continue
             item = self.file_queue[idx]
             if "error" in r and r["error"]:
                 continue

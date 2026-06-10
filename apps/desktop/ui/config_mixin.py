@@ -404,12 +404,15 @@ class ConfigTabMixin:
         worker = ApiTask(self.api_base, "GET", "/api/health")
 
         def _on_done(data):
-            if data.get("status") == "healthy":
-                self.server_status_label.setText("🟢 服务正常")
-                self.server_status_label.setStyleSheet("color: #10b981; font-size: 11px;")
-            else:
-                self.server_status_label.setText("🟡 服务异常")
-                self.server_status_label.setStyleSheet("color: #f59e0b; font-size: 11px;")
+            try:
+                if isinstance(data, dict) and data.get("status") == "healthy":
+                    self.server_status_label.setText("🟢 服务正常")
+                    self.server_status_label.setStyleSheet("color: #10b981; font-size: 11px;")
+                else:
+                    self.server_status_label.setText("🟡 服务异常")
+                    self.server_status_label.setStyleSheet("color: #f59e0b; font-size: 11px;")
+            except Exception:
+                pass
 
         def _on_error(_):
             self.server_status_label.setText("🔴 连接断开")

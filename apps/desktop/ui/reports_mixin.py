@@ -65,13 +65,13 @@ class ReportsTabMixin:
         worker.start()
 
     def _on_reports_loaded(self, data: dict):
-        reports = data.get("reports", [])
+        reports = data.get("reports", []) or []
         self.reports_table.setRowCount(len(reports))
         for i, r in enumerate(reports):
-            self.reports_table.setItem(i, 0, QTableWidgetItem(r.get('id', '')))
+            self.reports_table.setItem(i, 0, QTableWidgetItem(str(r.get('id', ''))))
             created = r.get('created_time', '')
             self.reports_table.setItem(i, 1, QTableWidgetItem(
-                created[:19] if created else ''))
+                str(created)[:19] if created else ''))
             has_md = "是" if r.get('has_markdown') else "否"
             md_item = QTableWidgetItem(has_md)
             md_item.setForeground(QColor("#10b981") if r.get('has_markdown') else QColor("#8b95a8"))
@@ -80,10 +80,13 @@ class ReportsTabMixin:
             report_path = r.get('path', '')
             size_str = "-"
             if report_path:
-                p = Path(report_path)
-                if p.exists():
-                    total_sz = sum(f.stat().st_size for f in p.rglob('*') if f.is_file())
-                    size_str = self._format_size(total_sz)
+                try:
+                    p = Path(report_path)
+                    if p.exists():
+                        total_sz = sum(f.stat().st_size for f in p.rglob('*') if f.is_file())
+                        size_str = self._format_size(total_sz)
+                except Exception:
+                    size_str = "-"
             self.reports_table.setItem(i, 3, QTableWidgetItem(size_str))
 
             btn_widget = QWidget()

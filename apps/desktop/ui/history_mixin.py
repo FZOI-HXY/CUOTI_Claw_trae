@@ -67,7 +67,7 @@ class HistoryTabMixin:
         worker.start()
 
     def _on_history_loaded(self, data: dict):
-        items = data.get("items", [])
+        items = data.get("items", []) or []
         self.history_table.setRowCount(len(items))
         for i, item in enumerate(items):
             self.history_table.setItem(i, 0, QTableWidgetItem(f"#{item.get('id', '')}"))
