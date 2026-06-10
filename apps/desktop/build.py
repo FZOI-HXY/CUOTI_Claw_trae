@@ -152,7 +152,6 @@ EXCLUDE_MODULES = [
     "concurrent.futures.process",
     "curses",
     "dbm",
-    "sqlite3",
     "sqlalchemy",
     "numpy",
     "scipy",
