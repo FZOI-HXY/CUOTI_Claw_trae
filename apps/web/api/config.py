@@ -70,4 +70,5 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # .env 文件的绝对路径，供写入配置使用
-ENV_FILE_PATH = Path(__file__).parent / ".env"
+# 优先使用 CLAW_ENV_FILE 环境变量（桌面应用模式），否则回退到源码目录
+ENV_FILE_PATH = Path(os.environ.get("CLAW_ENV_FILE", Path(__file__).parent / ".env"))

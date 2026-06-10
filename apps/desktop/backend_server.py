@@ -66,12 +66,13 @@ def _ensure_env_file(data_dir: str):
         shutil.copy(template, env_path)
         return
 
-    # 2. 创建默认 .env（API Token 已内置，开箱即用）
+    # 2. 创建默认 .env
     with open(env_path, "w", encoding="utf-8") as f:
         f.write("# Claw 错题管理系统 配置文件\n")
-        f.write("# API Token 已硬编码在 config.py 中，无需手动配置\n")
-        f.write('paddleocr_model="PP-StructureV3"\n')
-        f.write('paddleocr_api_url="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"\n')
+        f.write("# 首次使用请在应用中配置 API Token（系统配置 → API Token）\n")
+        f.write('# PADDLEOCR_API_KEY="your-paddleocr-api-token-here"\n')
+        f.write('PADDLEOCR_MODEL="PP-StructureV3"\n')
+        f.write('PADDLEOCR_API_URL="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"\n')
 
 
 # ---- 服务器生命周期 ----

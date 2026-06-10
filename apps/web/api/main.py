@@ -115,6 +115,7 @@ async def system_status():
 async def get_config():
     return {
         "paddleocr_api_url": settings.paddleocr_api_url,
+        "paddleocr_api_key": settings.paddleocr_api_key,
         "paddleocr_model": settings.paddleocr_model,
         "api_key_configured": bool(settings.paddleocr_api_key),
         "api_key_prefix": settings.paddleocr_api_key[:8] + "***" if settings.paddleocr_api_key else "",

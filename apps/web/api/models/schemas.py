@@ -37,6 +37,7 @@ class SystemStatusResponse(BaseModel):
 
 class ConfigResponse(BaseModel):
     paddleocr_api_url: str = ""
+    paddleocr_api_key: str = ""
     paddleocr_model: str = ""
     api_key_configured: bool = False
     api_key_prefix: str = ""

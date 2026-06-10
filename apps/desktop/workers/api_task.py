@@ -35,6 +35,14 @@ class _SelfPreservingThread(QThread):
     def _do_run(self):
         raise NotImplementedError
 
+    @classmethod
+    def wait_all(cls, timeout_ms: int = 3000):
+        """等待所有活跃线程结束（用于程序关闭时优雅退出）"""
+        for t in list(cls._active_instances):
+            if t.isRunning():
+                t.quit()
+                t.wait(timeout_ms)
+
 
 class ApiTask(_SelfPreservingThread):
     """通用 API 异步调用线程"""

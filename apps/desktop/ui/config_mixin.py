@@ -34,6 +34,7 @@ class ConfigTabMixin:
 
     # ── 配置控件 ──
     cfg_api_url: QLineEdit
+    cfg_api_token: QLineEdit
     cfg_model: QComboBox
     cfg_host: QLineEdit
     cfg_port: QSpinBox
@@ -44,6 +45,7 @@ class ConfigTabMixin:
     _api_status_badge: QLabel
     _api_test_result: QLabel
     _server_status_badge: QLabel
+    _token_toggle_btn: QPushButton
 
     # 来自 AppBaseMixin
     _show_status: Any
@@ -88,7 +90,7 @@ class ConfigTabMixin:
         cl.addLayout(title_row)
 
         cl.addWidget(self._card_desc(
-            "配置 PaddleOCR API 连接参数。Token 已内置在程序中，如需更换请直接修改源文件。"
+            "配置 PaddleOCR API 连接参数。Token 可从 PaddleOCR 官网获取，修改后点击保存立即生效。"
         ))
 
         # ── 表单 ──
@@ -96,6 +98,23 @@ class ConfigTabMixin:
 
         self.cfg_api_url = self._form_row(form, "API 地址:")
         self.cfg_api_url.setPlaceholderText("https://paddleocr.aistudio-app.com/api/v2/ocr/jobs")
+
+        # Token 输入行（含显隐切换）
+        token_row = QHBoxLayout()
+        token_row.setSpacing(6)
+        self.cfg_api_token = QLineEdit()
+        self.cfg_api_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cfg_api_token.setPlaceholderText("输入 PaddleOCR API Token")
+        self.cfg_api_token.setToolTip("输入 PaddleOCR API Token，点击眼睛图标可切换显示/隐藏")
+        token_row.addWidget(self.cfg_api_token)
+
+        self._token_toggle_btn = QPushButton("👁")
+        self._token_toggle_btn.setObjectName("ghostBtn")
+        self._token_toggle_btn.setFixedWidth(36)
+        self._token_toggle_btn.setToolTip("切换 Token 显示/隐藏")
+        self._token_toggle_btn.clicked.connect(self._toggle_token_visibility)
+        token_row.addWidget(self._token_toggle_btn)
+        form.addRow("API Token:", token_row)
 
         self.cfg_model = QComboBox()
         self.cfg_model.addItems([
@@ -270,6 +289,15 @@ class ConfigTabMixin:
         form.addRow(label, field)
         return field
 
+    def _toggle_token_visibility(self):
+        """切换 Token 输入框的显示/隐藏模式"""
+        if self.cfg_api_token.echoMode() == QLineEdit.EchoMode.Password:
+            self.cfg_api_token.setEchoMode(QLineEdit.EchoMode.Normal)
+            self._token_toggle_btn.setText("🙈")
+        else:
+            self.cfg_api_token.setEchoMode(QLineEdit.EchoMode.Password)
+            self._token_toggle_btn.setText("👁")
+
     @staticmethod
     def _set_badge(badge: QLabel, style: str, text: str):
         badge.setObjectName(style)
@@ -295,6 +323,13 @@ class ConfigTabMixin:
         idx = self.cfg_model.findText(model)
         if idx >= 0:
             self.cfg_model.setCurrentIndex(idx)
+
+        # 回填 Token（完整值，默认密码模式隐藏）
+        api_key = config.get("paddleocr_api_key", "")
+        self.cfg_api_token.setText(api_key)
+        self.cfg_api_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self._token_toggle_btn.setText("👁")
+
         self.cfg_host.setText(config.get("host", "0.0.0.0"))
         self.cfg_port.setValue(config.get("port", 8500))
         self.cfg_max_size.setValue(config.get("max_upload_size_mb", 50))
@@ -316,9 +351,10 @@ class ConfigTabMixin:
         self._show_status("配置加载完成")
 
     def save_api_config(self):
-        """保存 API 配置"""
+        """保存 API 配置（含 Token）"""
         data = {
             "paddleocr_api_url": self.cfg_api_url.text().strip(),
+            "paddleocr_api_key": self.cfg_api_token.text().strip(),
             "paddleocr_model": self.cfg_model.currentText(),
         }
         worker = ApiTask(self.api_base, "POST", "/api/config", json_data=data)
@@ -327,7 +363,12 @@ class ConfigTabMixin:
         worker.start()
 
     def _on_api_saved(self, _data):
-        self._set_badge(self._api_status_badge, "badgeSuccess", "✓ 配置已保存")
+        token = self.cfg_api_token.text().strip()
+        if token and token != "your-paddleocr-api-token-here":
+            display = token[:8] + "***" if len(token) > 8 else token
+            self._set_badge(self._api_status_badge, "badgeSuccess", f"✓ Token: {display}")
+        else:
+            self._set_badge(self._api_status_badge, "badgeError", "✗ Token 未配置")
         self.show_toast("API 配置已保存并应用")
         # 自动测试连接
         self._test_api_connection_visual()

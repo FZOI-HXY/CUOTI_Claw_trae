@@ -130,8 +130,18 @@ class StandaloneApp(
     # ============ 清理 ============
 
     def closeEvent(self, event):
-        # 清理所有活跃线程
-        for w in list(self.active_workers):
+        # 关闭内嵌后端
+        from apps.desktop import backend_server as bs
+        if bs.is_running():
+            print("[Claw] 正在停止后端服务...", flush=True)
+            bs.stop_server()
+
+        # 等待所有活跃线程结束
+        from apps.desktop.workers.api_task import _SelfPreservingThread
+        _SelfPreservingThread.wait_all(timeout_ms=2000)
+
+        # 清理 active_workers 中剩余的线程
+        for w in list(getattr(self, 'active_workers', [])):
             if w.isRunning():
                 w.quit()
                 w.wait(1000)
