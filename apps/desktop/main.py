@@ -67,6 +67,7 @@ class StandaloneApp(
         self.batch_results: List[Dict] = []        # 批量处理结果
         self.processing = False
         self.active_workers: List[QThread] = []
+        self._shutting_down = False  # 关闭标志，阻止关闭过程中创建新线程
 
         self.setup_ui()
         print("  [INIT] setup_menu...", flush=True)
@@ -130,16 +131,24 @@ class StandaloneApp(
     # ============ 清理 ============
 
     def closeEvent(self, event):
-        # 关闭内嵌后端
+        # 0. 标记关闭中，阻止后续代码创建新线程
+        self._shutting_down = True
+
+        # 1. 停止定时器，防止退出时产生新的工作线程
+        if hasattr(self, 'status_timer') and self.status_timer.isActive():
+            self.status_timer.stop()
+            print("[Claw] 已停止服务器状态定时检查", flush=True)
+
+        # 2. 关闭内嵌后端
         if backend_server.is_running():
             print("[Claw] 正在停止后端服务...", flush=True)
             backend_server.stop_server()
 
-        # 等待所有活跃线程结束
+        # 3. 等待所有活跃线程结束
         from apps.desktop.workers.api_task import _SelfPreservingThread
         _SelfPreservingThread.wait_all(timeout_ms=2000)
 
-        # 清理 active_workers 中剩余的线程
+        # 4. 清理 active_workers 中剩余的线程
         for w in list(getattr(self, 'active_workers', [])):
             if w.isRunning():
                 w.quit()
@@ -150,11 +159,10 @@ class StandaloneApp(
 def main():
     # 抑制 Qt 内部 "Destroyed while thread is still running" 无害警告
     from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
-    def _qt_msg_handler(msg_type: QtMsgType, _context, msg: str):
-        # 只吞掉这个特定的无害警告
-        if msg_type == QtMsgType.QtWarningMsg and "Destroyed while thread" in msg:
+    def _qt_msg_handler(_msg_type: QtMsgType, _context, msg: str):
+        # 吞掉 "Destroyed while thread" 无害警告（不限消息级别）
+        if "Destroyed while thread" in msg:
             return
-        # 其他所有消息照常输出
         print(f"[Qt] {msg}", flush=True)
     qInstallMessageHandler(_qt_msg_handler)
 

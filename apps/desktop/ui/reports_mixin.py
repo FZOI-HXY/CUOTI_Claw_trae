@@ -150,7 +150,7 @@ class ReportsTabMixin:
 
             self.reports_table.setCellWidget(i, 4, btn_widget)
             # 确保行高足够容纳按钮
-            self.reports_table.setRowHeight(i, 36)
+            self.reports_table.setRowHeight(i, 75)
 
     def view_report_content(self, report_id: str):
         worker = ApiTask(self.api_base, "GET", f"/api/report/{report_id}")

@@ -113,12 +113,13 @@ async def system_status():
 
 @app.get("/api/config")
 async def get_config():
+    has_key = bool(settings.paddleocr_api_key)
     return {
         "paddleocr_api_url": settings.paddleocr_api_url,
-        "paddleocr_api_key": settings.paddleocr_api_key,
+        "paddleocr_api_key": "********" if has_key else "",
         "paddleocr_model": settings.paddleocr_model,
-        "api_key_configured": bool(settings.paddleocr_api_key),
-        "api_key_prefix": settings.paddleocr_api_key[:8] + "***" if settings.paddleocr_api_key else "",
+        "api_key_configured": has_key,
+        "api_key_prefix": settings.paddleocr_api_key[:8] + "***" if has_key else "",
         "host": settings.host,
         "port": settings.port,
         "upload_dir": settings.upload_dir,

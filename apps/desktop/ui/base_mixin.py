@@ -164,6 +164,8 @@ class AppBaseMixin:
             self.active_workers.remove(worker)
 
     def refresh_all(self):
+        if getattr(self, '_shutting_down', False):
+            return
         try:
             self.load_history()
             self.load_reports()
@@ -189,6 +191,8 @@ class AppBaseMixin:
     # ============ 标签页切换 ============
 
     def tab_changed(self, index: int):
+        if getattr(self, '_shutting_down', False):
+            return
         try:
             if index == 1:
                 self.load_history()

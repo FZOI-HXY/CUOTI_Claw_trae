@@ -327,9 +327,13 @@ class ConfigTabMixin:
         if idx >= 0:
             self.cfg_model.setCurrentIndex(idx)
 
-        # 回填 Token（完整值，默认密码模式隐藏）
-        api_key = config.get("paddleocr_api_key", "")
-        self.cfg_api_token.setText(api_key)
+        # 已配置 Token 仅显示占位提示，不暴露完整密钥
+        if config.get("api_key_configured"):
+            self.cfg_api_token.setPlaceholderText("(已配置，输入新值可替换)")
+            self.cfg_api_token.clear()
+        else:
+            self.cfg_api_token.setPlaceholderText("请输入 API Token")
+            self.cfg_api_token.clear()
         self.cfg_api_token.setEchoMode(QLineEdit.EchoMode.Password)
         self._token_toggle_btn.setText("👁")
 
@@ -355,9 +359,13 @@ class ConfigTabMixin:
 
     def save_api_config(self):
         """保存 API 配置（含 Token）"""
+        token_input = self.cfg_api_token.text().strip()
+        # 忽略占位符/掩码值，避免覆盖真实 Token
+        if token_input in ("", "********", "your-paddleocr-api-token-here"):
+            token_input = ""  # 空值会被后端跳过，不覆盖现有配置
         data = {
             "paddleocr_api_url": self.cfg_api_url.text().strip(),
-            "paddleocr_api_key": self.cfg_api_token.text().strip(),
+            "paddleocr_api_key": token_input,
             "paddleocr_model": self.cfg_model.currentText(),
         }
         worker = ApiTask(self.api_base, "POST", "/api/config", json_data=data)
@@ -366,13 +374,9 @@ class ConfigTabMixin:
         worker.start()
 
     def _on_api_saved(self, _data):
-        token = self.cfg_api_token.text().strip()
-        if token and token != "your-paddleocr-api-token-here":
-            display = token[:8] + "***" if len(token) > 8 else token
-            self._set_badge(self._api_status_badge, "badgeSuccess", f"✓ Token: {display}")
-        else:
-            self._set_badge(self._api_status_badge, "badgeError", "✗ Token 未配置")
         self.show_toast("API 配置已保存并应用")
+        # 重新加载配置以获取最新 Token 状态
+        self.load_config()
         # 自动测试连接
         self._test_api_connection_visual()
 
@@ -445,9 +449,15 @@ class ConfigTabMixin:
     # ═══════════════════════════════════════════════════════
 
     def check_server_status(self):
+        # 窗口正在关闭，不再发起新请求
+        if getattr(self, '_shutting_down', False):
+            return
+
         worker = ApiTask(self.api_base, "GET", "/api/health")
 
         def _on_done(data):
+            if getattr(self, '_shutting_down', False):
+                return
             try:
                 if isinstance(data, dict) and data.get("status") == "healthy":
                     self.server_status_label.setText("🟢 服务正常")
@@ -459,6 +469,8 @@ class ConfigTabMixin:
                 pass
 
         def _on_error(_):
+            if getattr(self, '_shutting_down', False):
+                return
             self.server_status_label.setText("🔴 连接断开")
             self.server_status_label.setStyleSheet("color: #ef4444; font-size: 11px;")
 

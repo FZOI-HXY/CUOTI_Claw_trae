@@ -204,7 +204,7 @@ class PaddleOCRService:
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     response = await client.post(
                         self.job_url,
-                        headers={"Authorization": f"bearer {self.token}"},
+                        headers=self._build_headers(),
                         data=data,
                         files=files,
                     )

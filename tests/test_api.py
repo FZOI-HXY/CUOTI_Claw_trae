@@ -523,6 +523,8 @@ class TestErrorHandling:
         """配置文件不泄露 API 密钥原文"""
         resp = api_client.get("/api/config")
         data = resp.json()
+        # paddleocr_api_key 应为掩码值，不能是明文
+        assert data.get("paddleocr_api_key") != "test_token_for_mock", "API key must not be returned in plain text"
         # api_key_prefix 应该是截断的
         prefix = data.get("api_key_prefix", "")
         assert len(prefix) < 20, "API key prefix should be short"
