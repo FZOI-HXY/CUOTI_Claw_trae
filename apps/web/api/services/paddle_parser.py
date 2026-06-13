@@ -1,6 +1,11 @@
 """
 PaddleOCR 结果解析器
 将 PaddleOCR API 返回的 JSON/JSONL 结果提取为结构化数据
+
+支持模型:
+  - PaddleOCR-VL-1.6 / VL-1.5 / VL: layoutParsingResults → markdown.text / markdown.images
+  - PP-StructureV3: layoutParsingResults → markdown.text / markdown.images
+  - PP-OCRv6 / v5: ocrResults → ocrImage
 """
 import json
 from typing import Dict, Any
@@ -15,9 +20,9 @@ def extract_ocr_result(poll_result: Dict[str, Any]) -> Dict[str, Any]:
     从 JSON/JSONL 结果中提取结构化数据
 
     支持的结果字段:
-    - layoutParsingResults[].markdown.text / markdown.images (PP-StructureV3 / VL系列)
-    - layoutParsingResults[].outputImages (PP-StructureV3 输出图片)
-    - ocrResults[].ocrImage (PP-OCRv5)
+    - layoutParsingResults[].markdown.text / markdown.images (VL系列 / PP-StructureV3)
+    - layoutParsingResults[].outputImages (VL / PP-StructureV3 输出图片)
+    - ocrResults[].ocrImage (PP-OCRv6/v5)
     - layoutParsingResults[].layoutType / region (版面分析)
 
     JSONL 每行格式 (官方API):
@@ -164,7 +169,7 @@ def _extract_ocr_items(json_obj) -> list:
 
     支持多种嵌套结构:
     - result.layoutParsingResults[] (VL系列 / PP-StructureV3，含 markdown，优先)
-    - result.ocrResults[] (PP-OCRv5)
+    - result.ocrResults[] (PP-OCRv6/v5)
     - 直接的列表
     """
     if isinstance(json_obj, list):

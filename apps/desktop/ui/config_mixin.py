@@ -118,11 +118,14 @@ class ConfigTabMixin:
 
         self.cfg_model = QComboBox()
         self.cfg_model.addItems([
-            "PP-StructureV3", "PaddleOCR-VL-1.5", "PaddleOCR-VL", "PP-OCRv5"
+            "PaddleOCR-VL-1.6", "PaddleOCR-VL-1.5",
+            "PP-StructureV3", "PP-OCRv6", "PP-OCRv5"
         ])
         self.cfg_model.setToolTip(
-            "PP-StructureV3: 文档结构化推荐\n"
-            "PaddleOCR-VL: 多模态大模型\n"
+            "PaddleOCR-VL-1.6: 多模态大模型（推荐）\n"
+            "PaddleOCR-VL-1.5: 多模态大模型\n"
+            "PP-StructureV3: 文档结构化\n"
+            "PP-OCRv6: 纯文字识别\n"
             "PP-OCRv5: 纯文字识别"
         )
         form.addRow("模型:", self.cfg_model)

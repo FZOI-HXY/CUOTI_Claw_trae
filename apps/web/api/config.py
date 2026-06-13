@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # ⚠️ 安全警告：Token 已硬编码，请替换为你的实际 API Token
     # 从 https://aistudio.baidu.com/paddleocr/task 获取
     paddleocr_api_key: str = "your-paddleocr-api-token-here"
-    paddleocr_model: str = "PP-StructureV3"  # 模型: PaddleOCR-VL-1.5 / PaddleOCR-VL / PP-StructureV3 / PP-OCRv5
+    paddleocr_model: str = "PaddleOCR-VL-1.6"  # 模型: PaddleOCR-VL-1.6 / PaddleOCR-VL-1.5 / PP-StructureV3 / PP-OCRv6 / PP-OCRv5
 
     # 服务器配置
     host: str = "0.0.0.0"

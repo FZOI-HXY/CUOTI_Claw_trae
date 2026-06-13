@@ -3,9 +3,9 @@
 基于百度AI Studio PaddleOCR官方API
 
 支持模型:
-  - PaddleOCR-VL-1.5 / PaddleOCR-VL（文档结构化分析，推荐）
+  - PaddleOCR-VL-1.6 / PaddleOCR-VL-1.5（多模态文档结构化分析，推荐）
   - PP-StructureV3（文档结构化分析）
-  - PP-OCRv5（文字识别）
+  - PP-OCRv6 / PP-OCRv5（文字识别）
 
 官方API流程:
   1. POST multipart/form-data 提交本地文件（或 fileUrl）到 /api/v2/ocr/jobs，获取 jobId
@@ -31,9 +31,9 @@ POLL_INTERVAL = 5       # 轮询间隔（秒），官方建议 5s
 POLL_MAX_RETRIES = 120  # 最大轮询次数（总共 600 秒）
 
 # 模型分组
-VL_MODELS = {"PaddleOCR-VL-1.5", "PaddleOCR-VL"}
+VL_MODELS = {"PaddleOCR-VL-1.6", "PaddleOCR-VL-1.5", "PaddleOCR-VL"}
 STRUCTURE_MODELS = {"PP-StructureV3"}
-OCR_MODELS = {"PP-OCRv5", "PP-OCRv4"}
+OCR_MODELS = {"PP-OCRv6", "PP-OCRv5", "PP-OCRv4"}
 
 # API 错误码映射（参考百度AI Studio异步API文档）
 ERROR_CODE_MAP = {
@@ -62,7 +62,7 @@ class PaddleOCRService:
     提交任务 → 获取 jobId → 轮询结果 → 下载 JSON
     """
 
-    def __init__(self, api_url: str = "", api_key: str = "", model: str = "PP-StructureV3"):
+    def __init__(self, api_url: str = "", api_key: str = "", model: str = "PaddleOCR-VL-1.6"):
         self.job_url = api_url.rstrip("/")
         self.token = api_key
         self.model = model
@@ -77,11 +77,10 @@ class PaddleOCRService:
         """
         根据模型类型返回对应的 optionalPayload 参数
 
-        参考百度官方文档 (2026-02-04):
         - VL 系列 / PP-StructureV3: useDocOrientationClassify, useDocUnwarping, useChartRecognition
-        - PP-OCRv5: useDocOrientationClassify, useDocUnwarping, useTextlineOrientation
+        - PP-OCRv6/v5: useDocOrientationClassify, useDocUnwarping, useTextlineOrientation
 
-        注意: useTextlineOrientation 是 PP-OCRv5 专用参数，PP-StructureV3 使用 useChartRecognition
+        注意: useTextlineOrientation 是 OCR 模型专用参数，VL/Structure 模型使用 useChartRecognition
         """
         if self.model in VL_MODELS or self.model in STRUCTURE_MODELS:
             return {
@@ -90,7 +89,7 @@ class PaddleOCRService:
                 "useChartRecognition": False,
             }
         else:
-            # PP-OCRv5 等纯文字识别模型
+            # PP-OCRv6/v5 等纯文字识别模型
             return {
                 "useDocOrientationClassify": False,
                 "useDocUnwarping": False,
@@ -101,7 +100,7 @@ class PaddleOCRService:
         """
         根据模型返回结果 JSON 中的主字段名
         - VL 系列 / PP-StructureV3 返回 layoutParsingResults
-        - PP-OCRv5 返回 ocrResults
+        - PP-OCRv6/v5 返回 ocrResults
         """
         if self.model in VL_MODELS or self.model in STRUCTURE_MODELS:
             return "layoutParsingResults"

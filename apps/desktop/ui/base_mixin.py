@@ -179,10 +179,10 @@ class AppBaseMixin:
         QMessageBox.about(
             self,  # type: ignore[arg-type]
             "关于 Claw",
-            "<h2>Claw 错题管理系统 v1.2.0</h2>"
+            "<h2>Claw 错题管理系统 v1.3.0</h2>"
             "<p>基于 PaddleOCR 的智能错题识别与管理系统</p>"
             "<p>独立桌面应用程序 - API Token 已内置，开箱即用</p><hr>"
-            "<p>功能：拖拽/批量上传 → PP-StructureV3 文档结构化分析 → 报告自动生成</p>"
+            "<p>功能：拖拽/批量上传 → PaddleOCR-VL 文档结构化分析 → 报告自动生成</p>"
             "<p>技术栈：PyQt6 + httpx + PaddleOCR API</p>"
         )
 
