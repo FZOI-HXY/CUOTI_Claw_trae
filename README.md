@@ -71,7 +71,7 @@ pip install -r requirements.txt
 ```env
 PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 PADDLEOCR_API_KEY=your_token_here
-PADDLEOCR_MODEL=PP-StructureV3
+PADDLEOCR_MODEL=PaddleOCR-VL-1.6
 ```
 
 > TOKEN 从 [百度AI Studio PaddleOCR](https://aistudio.baidu.com/paddleocr/task) 获取
@@ -102,9 +102,11 @@ python main.py
 
 | 模型 | 说明 | 适用场景 |
 |------|------|----------|
-| PaddleOCR-VL-1.5 | 文档结构化分析（推荐） | 复杂文档解析，保留版式 |
-| PaddleOCR-VL | 文档结构化分析 | 复杂文档解析 |
+| PaddleOCR-VL-1.6 | 多模态文档结构化分析（推荐） | 复杂文档解析，保留版式，最新版 |
+| PaddleOCR-VL-1.5 | 多模态文档结构化分析 | 复杂文档解析，保留版式 |
+| PaddleOCR-VL | 多模态文档结构化分析 | 复杂文档解析 |
 | PP-StructureV3 | 文档结构化分析 | 版面分析+OCR+表格+公式 |
+| PP-OCRv6 | 文字识别 | 简单文字提取，最新版 |
 | PP-OCRv5 | 文字识别 | 简单文字提取 |
 
 ### 处理流程
@@ -138,6 +140,7 @@ python main.py
 | GET | `/api/history` | 处理历史 |
 | GET | `/api/reports` | 报告列表 |
 | GET | `/api/report/{id}` | 获取报告 |
+| GET | `/api/report/{id}/download` | 下载报告ZIP |
 | GET | `/api/report/{id}/image/{name}` | 获取报告图片 |
 | DELETE | `/api/report/{id}` | 删除报告 |
 | GET | `/api/health` | 健康检查 |
@@ -150,7 +153,7 @@ python main.py
 |------|------|--------|
 | PADDLEOCR_API_URL | PaddleOCR API地址 | https://paddleocr.aistudio-app.com/api/v2/ocr/jobs |
 | PADDLEOCR_API_KEY | TOKEN (Bearer认证) | - |
-| PADDLEOCR_MODEL | 模型版本 | PP-StructureV3 |
+| PADDLEOCR_MODEL | 模型版本 | PaddleOCR-VL-1.6 |
 | HOST | 监听地址 | 0.0.0.0 |
 | PORT | 监听端口 | 8500 |
 | DEBUG | 调试模式 | true |

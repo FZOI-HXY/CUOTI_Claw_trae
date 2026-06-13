@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QFileDialog, QMessageBox,
 )
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QColor
 
 from apps.desktop.workers.api_task import ApiTask
@@ -40,6 +41,16 @@ class ReportsTabMixin:
 
         action_bar = QHBoxLayout()
         action_bar.addStretch()
+        self.batch_del_btn = QPushButton("批量删除")
+        self.batch_del_btn.setEnabled(False)
+        self.batch_del_btn.setStyleSheet(
+            "QPushButton { background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid #ef4444; "
+            "border-radius: 4px; padding: 5px 12px; font-size: 14px; font-weight: 500; }"
+            "QPushButton:hover { background: rgba(239,68,68,0.3); }"
+            "QPushButton:disabled { background: transparent; color: #555; border-color: #444; }"
+        )
+        self.batch_del_btn.clicked.connect(self.batch_delete_reports)
+        action_bar.addWidget(self.batch_del_btn)
         refresh_btn = QPushButton("刷新")
         refresh_btn.clicked.connect(self.load_reports)
         action_bar.addWidget(refresh_btn)
@@ -52,8 +63,20 @@ class ReportsTabMixin:
         ])
         hdr = self.reports_table.horizontalHeader()
         assert hdr is not None
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        # 报告ID固定宽度，不拉伸；操作列拉伸以容纳按钮
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.reports_table.setColumnWidth(2, 90)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        # 增大行高以容纳操作按钮
+        vhdr = self.reports_table.verticalHeader()
+        assert vhdr is not None
+        vhdr.setDefaultSectionSize(36)
+        self.reports_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.reports_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.reports_table.itemSelectionChanged.connect(self._on_report_selection_changed)
         layout.addWidget(self.reports_table)
 
         self.tab_widget.addTab(tab, "报告中心")
@@ -91,41 +114,43 @@ class ReportsTabMixin:
 
             btn_widget = QWidget()
             btn_layout = QHBoxLayout(btn_widget)
-            btn_layout.setContentsMargins(4, 2, 4, 2)
-            btn_layout.setSpacing(4)
+            btn_layout.setContentsMargins(6, 4, 6, 4)
+            btn_layout.setSpacing(8)
 
             rid = r.get('id', '')
             view_btn = QPushButton("查看")
-            view_btn.setMaximumWidth(70)
+            view_btn.setMinimumWidth(60)
             view_btn.setStyleSheet(
                 "QPushButton { background: rgba(59,130,246,0.12); color: #60a5fa; border: 1px solid #3b82f6; "
-                "border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 500; }"
+                "border-radius: 4px; padding: 4px 10px; font-size: 13px; font-weight: 500; }"
                 "QPushButton:hover { background: rgba(59,130,246,0.25); }"
             )
             view_btn.clicked.connect(lambda checked, x=rid: self.view_report_content(x))
             btn_layout.addWidget(view_btn)
 
             dl_btn = QPushButton("下载")
-            dl_btn.setMaximumWidth(70)
+            dl_btn.setMinimumWidth(60)
             dl_btn.setStyleSheet(
                 "QPushButton { background: rgba(6,182,212,0.12); color: #22d3ee; border: 1px solid #06b6d4; "
-                "border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 500; }"
+                "border-radius: 4px; padding: 4px 10px; font-size: 13px; font-weight: 500; }"
                 "QPushButton:hover { background: rgba(6,182,212,0.25); }"
             )
             dl_btn.clicked.connect(lambda checked, x=rid: self.download_report(x))
             btn_layout.addWidget(dl_btn)
 
             del_btn = QPushButton("删除")
-            del_btn.setMaximumWidth(70)
+            del_btn.setMinimumWidth(60)
             del_btn.setStyleSheet(
                 "QPushButton { background: rgba(239,68,68,0.12); color: #f87171; border: 1px solid #ef4444; "
-                "border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 500; }"
+                "border-radius: 4px; padding: 4px 10px; font-size: 13px; font-weight: 500; }"
                 "QPushButton:hover { background: rgba(239,68,68,0.25); }"
             )
             del_btn.clicked.connect(lambda checked, x=rid: self.delete_report(x))
             btn_layout.addWidget(del_btn)
 
             self.reports_table.setCellWidget(i, 4, btn_widget)
+            # 确保行高足够容纳按钮
+            self.reports_table.setRowHeight(i, 36)
 
     def view_report_content(self, report_id: str):
         worker = ApiTask(self.api_base, "GET", f"/api/report/{report_id}")
@@ -177,3 +202,42 @@ class ReportsTabMixin:
         ))
         worker.error.connect(lambda e: self.show_toast(f"删除失败: {e}"))
         worker.start()
+
+    def _on_report_selection_changed(self):
+        """选中行变化时更新批量删除按钮状态"""
+        count = len(self.reports_table.selectedItems())
+        self.batch_del_btn.setEnabled(count > 0)
+
+    def batch_delete_reports(self):
+        selected_rows = set(item.row() for item in self.reports_table.selectedItems())
+        if not selected_rows:
+            return
+
+        report_ids = []
+        for row in sorted(selected_rows):
+            id_item = self.reports_table.item(row, 0)
+            if id_item:
+                report_ids.append(id_item.text())
+
+        reply = QMessageBox.question(
+            self,  # type: ignore[arg-type]
+            "确认批量删除",
+            f"确认删除选中的 {len(report_ids)} 个报告？\n\n"
+            + "\n".join(f"  - {rid}" for rid in report_ids[:5])
+            + (f"\n  ... 等 {len(report_ids)} 项" if len(report_ids) > 5 else "")
+            + "\n\n此操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        for rid in report_ids:
+            worker = ApiTask(self.api_base, "DELETE", f"/api/report/{rid}")
+            worker.error.connect(
+                lambda e, r=rid: self.show_toast(f"删除报告 {r} 失败: {e}")
+            )
+            worker.start()
+
+        self.show_toast(f"正在删除 {len(report_ids)} 个报告...")
+        # 延迟刷新列表
+        QTimer.singleShot(1000, self.load_reports)

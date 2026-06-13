@@ -68,6 +68,9 @@ class UploadTabMixin:
     # 来自 history_mixin
     load_history: Any
 
+    # 来自 reports_mixin
+    load_reports: Any
+
     # ============ 标签页创建 ============
 
     def create_upload_tab(self):
@@ -560,6 +563,7 @@ class UploadTabMixin:
         self._show_batch_results()
         self.render_queue()
         self.load_history()
+        self.load_reports()
 
         for r in self.batch_results:
             if r["success"]:

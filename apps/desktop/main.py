@@ -149,10 +149,10 @@ class StandaloneApp(
 
 def main():
     # 抑制 Qt 内部 "Destroyed while thread is still running" 无害警告
-    from PyQt6.QtCore import qInstallMessageHandler
-    def _qt_msg_handler(msg_type, _context, msg):
+    from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+    def _qt_msg_handler(msg_type: QtMsgType, _context, msg: str):
         # 只吞掉这个特定的无害警告
-        if int(msg_type) == 1 and "Destroyed while thread" in msg:
+        if msg_type == QtMsgType.QtWarningMsg and "Destroyed while thread" in msg:
             return
         # 其他所有消息照常输出
         print(f"[Qt] {msg}", flush=True)
