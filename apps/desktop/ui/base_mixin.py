@@ -164,11 +164,16 @@ class AppBaseMixin:
             self.active_workers.remove(worker)
 
     def refresh_all(self):
-        self.load_history()
-        self.load_reports()
-        if self.tab_widget.currentIndex() == 3:
-            self.load_config()
-        self.show_toast("已刷新")
+        try:
+            self.load_history()
+            self.load_reports()
+            if self.tab_widget.currentIndex() == 3:
+                self.load_config()
+            self.show_toast("已刷新")
+        except Exception as e:
+            print(f"[Claw] refresh_all 异常: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
     def show_about(self):
         QMessageBox.about(
@@ -184,9 +189,14 @@ class AppBaseMixin:
     # ============ 标签页切换 ============
 
     def tab_changed(self, index: int):
-        if index == 1:
-            self.load_history()
-        elif index == 2:
-            self.load_reports()
-        elif index == 3:
-            self.load_config()
+        try:
+            if index == 1:
+                self.load_history()
+            elif index == 2:
+                self.load_reports()
+            elif index == 3:
+                self.load_config()
+        except Exception as e:
+            print(f"[Claw] tab_changed({index}) 异常: {e}", flush=True)
+            import traceback
+            traceback.print_exc()

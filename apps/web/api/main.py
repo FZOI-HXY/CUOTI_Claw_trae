@@ -787,9 +787,16 @@ async def download_report_zip(report_id: str):
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(md_file, "report.md")
         image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+        # 同级目录图片
         for file_path in report_dir.iterdir():
             if file_path.is_file() and file_path.suffix.lower() in image_extensions:
                 zf.write(file_path, file_path.name)
+        # imgs/ 子目录图片
+        imgs_dir = report_dir / "imgs"
+        if imgs_dir.exists():
+            for file_path in imgs_dir.iterdir():
+                if file_path.is_file() and file_path.suffix.lower() in image_extensions:
+                    zf.write(file_path, f"imgs/{file_path.name}")
 
     zip_buffer.seek(0)
     return StreamingResponse(

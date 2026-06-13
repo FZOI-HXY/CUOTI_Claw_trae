@@ -131,10 +131,9 @@ class StandaloneApp(
 
     def closeEvent(self, event):
         # 关闭内嵌后端
-        from apps.desktop import backend_server as bs
-        if bs.is_running():
+        if backend_server.is_running():
             print("[Claw] 正在停止后端服务...", flush=True)
-            bs.stop_server()
+            backend_server.stop_server()
 
         # 等待所有活跃线程结束
         from apps.desktop.workers.api_task import _SelfPreservingThread
@@ -149,6 +148,31 @@ class StandaloneApp(
 
 
 def main():
+    # 抑制 Qt 内部 "Destroyed while thread is still running" 无害警告
+    from PyQt6.QtCore import qInstallMessageHandler
+    def _qt_msg_handler(msg_type, _context, msg):
+        # 只吞掉这个特定的无害警告
+        if int(msg_type) == 1 and "Destroyed while thread" in msg:
+            return
+        # 其他所有消息照常输出
+        print(f"[Qt] {msg}", flush=True)
+    qInstallMessageHandler(_qt_msg_handler)
+
+    try:
+        _do_main()
+    except Exception as e:
+        import traceback as _tb
+        print(f"\n[Claw] ===== 程序异常退出 =====", flush=True)
+        print(f"[Claw] 异常: {e}", flush=True)
+        _tb.print_exc()
+        try:
+            backend_server.stop_server()
+        except Exception:
+            pass
+        sys.exit(1)
+
+
+def _do_main():
     app = QApplication(sys.argv)
     app.setApplicationName("Claw-Desktop")
     app.setOrganizationName("ClawTeam")

@@ -118,7 +118,8 @@ class MarkdownGenerator:
             lines.append("")
             for i, img_key in enumerate(images.keys(), 1):
                 safe_name = self._safe_image_name(img_key)
-                lines.append(f"![{img_key}]({safe_name})")
+                rel_path = f"imgs/{safe_name}"
+                lines.append(f"![{img_key}]({rel_path})")
                 lines.append(f"*图片 {i}: {img_key}*")
                 lines.append("")
 
@@ -256,7 +257,8 @@ class MarkdownGenerator:
             img_key = ref.strip()
             if img_key in images:
                 safe_name = self._safe_image_name(img_key)
-                return f"![{alt or img_key}]({safe_name})"
+                rel_path = f"imgs/{safe_name}"
+                return f"![{alt or img_key}]({rel_path})"
 
             return match.group(0)
 
@@ -361,13 +363,15 @@ class MarkdownGenerator:
                 f.write(report_content)
             logger.info(f"Markdown报告已保存: {md_path}")
 
-            # 2. 保存内嵌图片（支持 base64 和 URL 两种格式）
+            # 2. 保存内嵌图片到 imgs/ 子目录（支持 base64 和 URL 两种格式）
+            imgs_dir = report_dir / "imgs"
+            imgs_dir.mkdir(exist_ok=True)
             for img_key, img_value in images.items():
                 try:
                     img_data = self._resolve_image_data(img_value)
                     if img_data:
                         safe_name = self._safe_image_name(img_key)
-                        img_path = report_dir / safe_name
+                        img_path = imgs_dir / safe_name
                         with open(img_path, "wb") as f:
                             f.write(img_data)
                 except Exception as e:

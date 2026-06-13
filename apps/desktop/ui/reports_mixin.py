@@ -96,23 +96,31 @@ class ReportsTabMixin:
 
             rid = r.get('id', '')
             view_btn = QPushButton("查看")
-            view_btn.setObjectName("ghostBtn")
-            view_btn.setMaximumWidth(60)
+            view_btn.setMaximumWidth(70)
+            view_btn.setStyleSheet(
+                "QPushButton { background: rgba(59,130,246,0.12); color: #60a5fa; border: 1px solid #3b82f6; "
+                "border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 500; }"
+                "QPushButton:hover { background: rgba(59,130,246,0.25); }"
+            )
             view_btn.clicked.connect(lambda checked, x=rid: self.view_report_content(x))
             btn_layout.addWidget(view_btn)
 
             dl_btn = QPushButton("下载")
-            dl_btn.setObjectName("ghostBtn")
-            dl_btn.setMaximumWidth(60)
+            dl_btn.setMaximumWidth(70)
+            dl_btn.setStyleSheet(
+                "QPushButton { background: rgba(6,182,212,0.12); color: #22d3ee; border: 1px solid #06b6d4; "
+                "border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 500; }"
+                "QPushButton:hover { background: rgba(6,182,212,0.25); }"
+            )
             dl_btn.clicked.connect(lambda checked, x=rid: self.download_report(x))
             btn_layout.addWidget(dl_btn)
 
             del_btn = QPushButton("删除")
-            del_btn.setMaximumWidth(60)
+            del_btn.setMaximumWidth(70)
             del_btn.setStyleSheet(
-                "QPushButton { background: transparent; color: #ef4444; border: 1px solid #ef4444; "
-                "border-radius: 4px; padding: 4px 8px; }"
-                "QPushButton:hover { background: rgba(239,68,68,0.15); }"
+                "QPushButton { background: rgba(239,68,68,0.12); color: #f87171; border: 1px solid #ef4444; "
+                "border-radius: 4px; padding: 4px 8px; font-size: 13px; font-weight: 500; }"
+                "QPushButton:hover { background: rgba(239,68,68,0.25); }"
             )
             del_btn.clicked.connect(lambda checked, x=rid: self.delete_report(x))
             btn_layout.addWidget(del_btn)

@@ -12,16 +12,19 @@ from typing import List, Dict
 from PyQt6.QtCore import QThread, pyqtSignal
 import httpx
 
-
 import traceback as _traceback
 
 class _SelfPreservingThread(QThread):
     """QThread 基类：防止 Python GC 在运行中回收实例"""
 
     _active_instances: "set[_SelfPreservingThread]" = set()
+    _counter = 0
 
-    def __init__(self):
+    def __init__(self, name: str = ""):
         super().__init__()
+        _SelfPreservingThread._counter += 1
+        thread_name = name or f"Worker-{_SelfPreservingThread._counter}"
+        self.setObjectName(thread_name)
         _SelfPreservingThread._active_instances.add(self)
 
     def run(self):
@@ -40,6 +43,7 @@ class _SelfPreservingThread(QThread):
         """等待所有活跃线程结束（用于程序关闭时优雅退出）"""
         for t in list(cls._active_instances):
             if t.isRunning():
+                print(f"[Claw] 等待线程 {t.objectName()} 结束...", flush=True)
                 t.quit()
                 t.wait(timeout_ms)
 
@@ -52,7 +56,7 @@ class ApiTask(_SelfPreservingThread):
     def __init__(self, api_base: str, method: str, endpoint: str,
                  json_data: "dict | None" = None, files_data: "dict | None" = None,
                  raw_response: bool = False):
-        super().__init__()
+        super().__init__(f"API-{method}-{endpoint}")
         self.api_base = api_base
         self.method = method
         self.endpoint = endpoint
@@ -97,7 +101,8 @@ class UploadWorker(_SelfPreservingThread):
     error = pyqtSignal(int, str)  # index, error
 
     def __init__(self, api_base: str, file_path: str, index: int):
-        super().__init__()
+        name = Path(file_path).name
+        super().__init__(f"Upload-{name}")
         self.api_base = api_base
         self.file_path = file_path
         self.index = index
@@ -128,7 +133,7 @@ class SubmitWorker(_SelfPreservingThread):
     error = pyqtSignal(int, str)
 
     def __init__(self, api_base: str, file_id: str, index: int):
-        super().__init__()
+        super().__init__(f"Submit-{file_id[:8]}")
         self.api_base = api_base
         self.file_id = file_id
         self.index = index
@@ -157,7 +162,7 @@ class PollWorker(_SelfPreservingThread):
     error = pyqtSignal(str)
 
     def __init__(self, api_base: str, tasks: List[Dict], index_map: Dict[str, int]):
-        super().__init__()
+        super().__init__(f"Poll-{len(tasks)}tasks")
         self.api_base = api_base
         self.tasks = tasks
         self.index_map = index_map
