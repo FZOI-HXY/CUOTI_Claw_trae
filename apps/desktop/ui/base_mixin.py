@@ -141,8 +141,8 @@ class AppBaseMixin:
     # ============ 工具函数 ============
 
     @staticmethod
-    def _render_markdown_html(md: str) -> str:
-        return render_markdown_html(md)
+    def _render_markdown_html(md: str, report_dir: str = "") -> str:
+        return render_markdown_html(md, report_dir=report_dir, api_base="")
 
     @staticmethod
     def _format_size(bytes_val: int) -> str:

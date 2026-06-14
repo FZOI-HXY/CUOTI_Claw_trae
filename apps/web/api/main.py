@@ -174,6 +174,22 @@ async def get_history(limit: int = Query(default=50, le=200)):
     }
 
 
+@app.delete("/api/history/{history_id}")
+async def delete_history(history_id: str):
+    if ts.delete_history(history_id):
+        return {"success": True, "message": f"历史记录 {history_id} 已删除"}
+    raise HTTPException(status_code=404, detail=f"历史记录 {history_id} 不存在")
+
+
+@app.post("/api/history/batch-delete")
+async def batch_delete_history(ids: dict[str, list[str]]):
+    history_ids = ids.get("ids", [])
+    if not history_ids:
+        raise HTTPException(status_code=400, detail="未提供要删除的记录 ID")
+    deleted = ts.batch_delete_history(history_ids)
+    return {"success": True, "deleted": deleted, "message": f"已删除 {deleted} 条记录"}
+
+
 @app.post("/api/upload")
 async def upload_image(file: UploadFile = File(...)):
     """上传图片文件"""

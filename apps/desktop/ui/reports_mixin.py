@@ -156,7 +156,8 @@ class ReportsTabMixin:
         worker = ApiTask(self.api_base, "GET", f"/api/report/{report_id}")
         def _on_done(data):
             content = data.get("content", "")
-            self.markdown_view.setHtml(self._render_markdown_html(content))
+            report_dir = data.get("path", "")
+            self.markdown_view.setHtml(self._render_markdown_html(content, report_dir=report_dir))
             self.tab_widget.setCurrentIndex(0)
             self.show_toast("报告已加载")
         worker.finished.connect(_on_done)

@@ -19,7 +19,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor
 
 from apps.desktop.utils import format_size
-from apps.desktop.workers.api_task import UploadWorker, SubmitWorker, PollWorker
+from apps.desktop.workers.api_task import UploadWorker, SubmitWorker, PollWorker, ApiTask
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QTabWidget, QTableWidget
@@ -161,6 +161,18 @@ class UploadTabMixin:
         stats_layout.addWidget(stats_header)
         self.stats_grid = QGridLayout()
         stats_layout.addLayout(self.stats_grid)
+
+        # 合并下载按钮（批量处理完成后可用）
+        btn_bar_stats = QHBoxLayout()
+        self.btn_batch_download = QPushButton("合并下载全部")
+        self.btn_batch_download.setObjectName("primaryBtn")
+        self.btn_batch_download.setMaximumWidth(160)
+        self.btn_batch_download.setEnabled(False)
+        self.btn_batch_download.clicked.connect(self.batch_download_all)
+        btn_bar_stats.addWidget(self.btn_batch_download)
+        btn_bar_stats.addStretch()
+        stats_layout.addLayout(btn_bar_stats)
+
         stats_layout.addStretch()
         result_splitter.addWidget(stats_container)
 
@@ -565,6 +577,14 @@ class UploadTabMixin:
         self.load_history()
         self.load_reports()
 
+        # 有成功结果时启用合并下载按钮
+        succeeded_count = sum(1 for r in self.batch_results if r["success"])
+        if succeeded_count >= 1:
+            self.btn_batch_download.setEnabled(True)
+            self.btn_batch_download.setText(f"合并下载 ({succeeded_count} 个报告)")
+        else:
+            self.btn_batch_download.setEnabled(False)
+
         for r in self.batch_results:
             if r["success"]:
                 self._preview_first_result(r["file_id"])
@@ -575,7 +595,8 @@ class UploadTabMixin:
             if item["file_id"] == file_id and item["result"]:
                 md_text = item["result"].get("markdown_text", "")
                 if md_text:
-                    self.markdown_view.setHtml(self._render_markdown_html(md_text))
+                    report_dir = item["result"].get("report_dir", "")
+                    self.markdown_view.setHtml(self._render_markdown_html(md_text, report_dir=report_dir))
                 break
 
     def _show_batch_results(self):
@@ -622,3 +643,40 @@ class UploadTabMixin:
             if cb is not None:
                 cb.setText(text)
             self.show_toast("已复制到剪贴板")
+
+    def batch_download_all(self):
+        """将所有成功处理的报告合并为一个 ZIP 下载"""
+        report_ids = [r["reportDir"] for r in self.batch_results
+                     if r.get("success") and r.get("reportDir")]
+        # 从完整路径提取目录名作为报告 ID
+        from pathlib import PurePath
+        report_ids = [PurePath(p).name for p in report_ids]
+
+        if not report_ids:
+            self.show_toast("没有可下载的报告")
+            return
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,  # type: ignore[arg-type]
+            "保存合并报告", "claw_batch_reports.zip",
+            "ZIP 文件 (*.zip)"
+        )
+        if not save_path:
+            return
+
+        worker = ApiTask(
+            self.api_base, "POST", "/api/batch/download",
+            json_data={"report_ids": report_ids},
+            raw_response=True,
+        )
+        def _on_done(data: bytes):
+            try:
+                with open(save_path, "wb") as f:
+                    f.write(data)
+                size_mb = len(data) / (1024 * 1024)
+                self.show_toast(f"已保存 {len(report_ids)} 个报告到: {save_path} ({size_mb:.1f}MB)")
+            except Exception as ex:
+                self.show_toast(f"保存失败: {ex}")
+        worker.finished.connect(_on_done)
+        worker.error.connect(lambda e: self.show_toast(f"合并下载失败: {e}"))
+        worker.start()

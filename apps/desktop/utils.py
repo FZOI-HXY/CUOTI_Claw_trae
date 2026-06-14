@@ -4,10 +4,18 @@ Standalone 工具函数
 - 文件大小格式化
 """
 import re
+from pathlib import Path
 
 
-def render_markdown_html(md: str) -> str:
-    """将 Markdown 转换为基本 HTML（用于 QTextEdit 显示）"""
+def render_markdown_html(md: str, report_dir: str = "", api_base: str = "") -> str:
+    """
+    将 Markdown 转换为基本 HTML（用于 QTextEdit 显示）
+
+    Args:
+        md: Markdown 文本
+        report_dir: 报告目录的绝对路径（用于将相对图片路径转为 file:// URL）
+        api_base: API 基础地址（备用方案，通过 API 获取图片）
+    """
     css = """
     <style>
     body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; color: #e8ecf1;
@@ -34,6 +42,27 @@ def render_markdown_html(md: str) -> str:
     </style>
     """
     html = md
+    # ---- 图片语法: ![alt](path) → <img> 标签 ----
+    def _resolve_img(match):
+        alt = match.group(1) or "image"
+        img_path = match.group(2)
+        # 跳过已有协议的 URL
+        if img_path.startswith(("http://", "https://", "data:", "file://")):
+            return f'<img src="{img_path}" alt="{alt}" width="34%" />'
+        # 优先用 report_dir 解析为本地 file:// 路径
+        if report_dir:
+            full = Path(report_dir) / img_path
+            if full.exists():
+                return f'<img src="file:///{full.resolve()}" alt="{alt}" width="34%" />'
+        # 其次尝试通过 API 获取（需要 report_id）
+        if api_base and report_dir:
+            from pathlib import PurePath
+            report_id = PurePath(report_dir).name
+            api_url = f"{api_base.rstrip('/')}/api/report/{report_id}/image/{img_path}"
+            return f'<img src="{api_url}" alt="{alt}" width="34%" />'
+        # 都不行就保留原样，显示 alt 文本
+        return f'<div style="color:#f87171;padding:4px 0;">[图片: {alt} - {img_path}]</div>'
+    html = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', _resolve_img, html)
     # 基本转换
     html = re.sub(r'^### (.+)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)
     html = re.sub(r'^## (.+)$', r'<h2>\1</h2>', html, flags=re.MULTILINE)
