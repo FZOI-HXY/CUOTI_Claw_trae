@@ -1,5 +1,5 @@
 """
-测试: backend/main.py - FastAPI 后端 API 集成测试
+测试: apps/web/api/main.py - FastAPI 后端 API 集成测试
 
 涵盖完整业务流程:
   1. 健康检查 (GET /api/health)
@@ -9,20 +9,18 @@
   5. 任务提交 (POST /api/submit/{file_id})
   6. 任务轮询 (POST /api/poll/{task_id})
   7. 报告管理 (GET /api/reports, GET /api/report/{id}, DELETE)
-  8. 历史记录 (GET /api/history)
-  9. 错误处理与边界条件
+  8. 历史记录 (GET/DELETE /api/history, POST /api/history/batch-delete)
+  9. 报告管理 (GET /api/reports, GET /api/report/{id}, DELETE)
   10. 完整端到端业务流程
+  11. 错误处理与边界条件
 
 使用 FastAPI TestClient + httpx Mock 隔离外部 API 依赖。
 """
 
 import sys
 import io
-import json
-import uuid
-import importlib.util
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,12 +39,13 @@ sys.path.insert(0, _backend_path)
 @pytest.fixture(scope="function")
 def api_client(temp_dir):
     """创建 FastAPI TestClient，mock paddle_service"""
-    from config import settings
+    from apps.web.api.config import settings
 
     # 临时修改上传和输出目录
     original_upload = settings.upload_dir
     original_output = settings.output_dir
     original_log = settings.log_dir
+    original_max = settings.max_upload_size_mb
 
     settings.upload_dir = str(temp_dir / "uploads")
     settings.output_dir = str(temp_dir / "output")
@@ -59,20 +58,22 @@ def api_client(temp_dir):
     Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
 
-    # 导入 app (显式从 backend/main.py 加载，避免与 standalone/main.py 冲突)
+    # 导入 app (从 apps/web/api/main.py 加载真实的 FastAPI 应用)
     import importlib.util
-    backend_main_path = Path(__file__).parent.parent / "backend" / "main.py"
+    backend_main_path = Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py"
     spec = importlib.util.spec_from_file_location("backend_main", backend_main_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载后端模块: {backend_main_path}")
     backend_main = importlib.util.module_from_spec(spec)
     sys.modules["backend_main"] = backend_main
     spec.loader.exec_module(backend_main)
     app = backend_main.app
-    processing_history = backend_main.processing_history
-    task_store = backend_main.task_store
+    # task_service 是全局单例，包含 task_store 和处理历史
+    from apps.web.api.services.task_service import task_service
 
-    # 清空历史记录
-    processing_history.clear()
-    task_store.clear()
+    # 清空任务存储和历史记录（重置测试状态）
+    task_service._task_store.clear()
+    task_service._history.clear()
 
     # Mock PaddleOCRService 的核心方法
     with patch.object(backend_main.paddle_service, "submit_task", new_callable=AsyncMock) as mock_submit, \
@@ -113,8 +114,8 @@ def api_client(temp_dir):
 @pytest.fixture(scope="function")
 def uploaded_file_id(api_client, sample_image_bytes):
     """上传一个文件并返回 file_id"""
-    from main import task_store
-    task_store.clear()
+    from apps.web.api.services.task_service import task_service
+    task_service._task_store.clear()
 
     resp = api_client.post("/api/upload", files={
         "file": ("test_image.jpg", io.BytesIO(sample_image_bytes), "image/jpeg")
@@ -244,14 +245,19 @@ class TestUploadAPI:
         assert resp.status_code == 400
 
     def test_upload_rejects_oversized(self, api_client):
-        """拒绝超大文件超过 50MB 限制"""
-        from config import settings
-        max_mb = settings.max_upload_size_mb
-        oversized = b"X" * ((max_mb + 1) * 1024 * 1024)
-        resp = api_client.post("/api/upload", files={
-            "file": ("big.jpg", io.BytesIO(oversized), "image/jpeg")
-        })
-        assert resp.status_code == 400
+        """拒绝超大文件（超过限制大小的文件被拒绝）"""
+        from apps.web.api.config import settings
+        original_max = settings.max_upload_size_mb
+        try:
+            # 临时设为 1MB，用 2MB 文件触发拒绝
+            settings.max_upload_size_mb = 1
+            oversized = b"X" * (2 * 1024 * 1024)  # 2MB > 1MB limit
+            resp = api_client.post("/api/upload", files={
+                "file": ("big.jpg", io.BytesIO(oversized), "image/jpeg")
+            })
+            assert resp.status_code == 400
+        finally:
+            settings.max_upload_size_mb = original_max
 
     def test_upload_multiple_files_different_ids(self, api_client, sample_image_bytes):
         """多次上传获得不同的 file_id"""
@@ -386,6 +392,75 @@ class TestHistoryAPI:
         """limit 参数限制返回条数"""
         resp = api_client.get("/api/history?limit=5")
         assert resp.status_code == 200
+
+    def test_delete_nonexistent_history(self, api_client):
+        """删除不存在的历史记录"""
+        resp = api_client.delete("/api/history/nonexistent_id")
+        assert resp.status_code == 404
+
+    def test_single_delete_history(self, api_client, uploaded_file_id):
+        """删除单条历史记录"""
+        # 完成上传→提交→轮询流程以生成历史记录
+        submit_resp = api_client.post(f"/api/submit/{uploaded_file_id}")
+        task_id = submit_resp.json()["task_id"]
+        api_client.post(f"/api/poll/{task_id}")
+
+        # 获取历史记录
+        history_resp = api_client.get("/api/history")
+        history_data = history_resp.json()
+        assert history_data["total"] >= 1
+        first_id = history_data["items"][0]["id"]
+
+        # 删除
+        del_resp = api_client.delete(f"/api/history/{first_id}")
+        assert del_resp.status_code == 200
+        assert del_resp.json()["success"] is True
+
+        # 确认已删除
+        resp = api_client.get("/api/history")
+        ids = [item["id"] for item in resp.json()["items"]]
+        assert first_id not in ids
+
+    def test_batch_delete_history(self, api_client, sample_image_bytes):
+        """批量删除多条历史记录"""
+        # 创建 3 条历史记录
+        for i in range(3):
+            upload_resp = api_client.post("/api/upload", files={
+                "file": (f"batch_{i}.jpg", io.BytesIO(sample_image_bytes), "image/jpeg")
+            })
+            file_id = upload_resp.json()["file_id"]
+            submit_resp = api_client.post(f"/api/submit/{file_id}")
+            task_id = submit_resp.json()["task_id"]
+            api_client.post(f"/api/poll/{task_id}")
+
+        # 获取所有记录 ID
+        history_resp = api_client.get("/api/history?limit=100")
+        all_ids = [item["id"] for item in history_resp.json()["items"]]
+        assert len(all_ids) >= 3
+
+        # 批量删除前 2 条
+        delete_ids = all_ids[:2]
+        batch_resp = api_client.post("/api/history/batch-delete", json={"ids": delete_ids})
+        assert batch_resp.status_code == 200
+        data = batch_resp.json()
+        assert data["success"] is True
+        assert data["deleted"] == 2
+
+        # 确认已删除的条目不存在
+        resp = api_client.get("/api/history?limit=100")
+        remaining_ids = [item["id"] for item in resp.json()["items"]]
+        for did in delete_ids:
+            assert did not in remaining_ids, f"#{did} should have been deleted"
+
+    def test_batch_delete_empty_ids(self, api_client):
+        """批量删除时未提供 ID"""
+        resp = api_client.post("/api/history/batch-delete", json={"ids": []})
+        assert resp.status_code == 400
+
+    def test_batch_delete_missing_payload(self, api_client):
+        """批量删除时缺少 ids 字段"""
+        resp = api_client.post("/api/history/batch-delete", json={})
+        assert resp.status_code == 400
 
 
 # ──────────────────────────────────────────────────

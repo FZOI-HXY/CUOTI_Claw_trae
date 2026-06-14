@@ -70,31 +70,23 @@ class StandaloneApp(
         self._shutting_down = False  # 关闭标志，阻止关闭过程中创建新线程
 
         self.setup_ui()
-        print("  [INIT] setup_menu...", flush=True)
         self.setup_menu()
-        print("  [INIT] setup_statusbar...", flush=True)
         self.setup_statusbar()
-        print("  [INIT] check_server_status...", flush=True)
         self.check_server_status()
-        print("  [INIT] QTimer...", flush=True)
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self.check_server_status)
-        self.status_timer.start(15000)
-        print("  [INIT] __init__ 完成", flush=True)
+        self.status_timer.start(5000)  # 每 5 秒检查一次服务器状态
 
     # ============ UI 搭建 ============
 
     def setup_ui(self):
-        print("  [UI] 设置窗口属性...", flush=True)
         self.setWindowTitle("Claw - 错题管理系统")
         self.setMinimumSize(1280, 800)
         self.resize(1400, 880)
         self.setAcceptDrops(True)
 
-        print("  [UI] 应用样式表...", flush=True)
         self.setStyleSheet(DARK_STYLE)
 
-        print("  [UI] 创建中央组件和布局...", flush=True)
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
@@ -102,7 +94,6 @@ class StandaloneApp(
         main_layout.setSpacing(12)
 
         # 标题栏
-        print("  [UI] 标题栏...", flush=True)
         title_layout = QHBoxLayout()
         title = QLabel("Claw 错题管理系统")
         title.setStyleSheet("font-size: 20px; font-weight: 700; color: #f59e0b;")
@@ -114,19 +105,13 @@ class StandaloneApp(
         main_layout.addLayout(title_layout)
 
         # 标签页
-        print("  [UI] 标签页容器...", flush=True)
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
 
-        print("  [UI] 创建上传标签页...", flush=True)
         self.create_upload_tab()
-        print("  [UI] 创建历史标签页...", flush=True)
         self.create_history_tab()
-        print("  [UI] 创建报告标签页...", flush=True)
         self.create_reports_tab()
-        print("  [UI] 创建配置标签页...", flush=True)
         self.create_config_tab()
-        print("  [UI] setup_ui 完成", flush=True)
 
     # ============ 清理 ============
 
@@ -154,16 +139,30 @@ class StandaloneApp(
                 w.quit()
                 w.wait(1000)
         event.accept()
+        # 由于 setQuitOnLastWindowClosed(False)，需要显式退出
+        print("[Claw] DIAG: closeEvent 即将调用 QApplication.quit()", flush=True)
+        QApplication.quit()
 
 
 def main():
+    # === SIGSEGV 诊断：faulthandler 捕获 C 层崩溃堆栈 ===
+    import faulthandler, signal
+    faulthandler.enable()
+    # 尝试为 Windows 注册信号处理器（部分信号在 Windows 可能不可用）
+    try:
+        faulthandler.register(signal.SIGSEGV)
+    except AttributeError:
+        pass
+
     # 抑制 Qt 内部 "Destroyed while thread is still running" 无害警告
     from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
     def _qt_msg_handler(_msg_type: QtMsgType, _context, msg: str):
-        # 吞掉 "Destroyed while thread" 无害警告（不限消息级别）
+        # 吞掉 "Destroyed while thread" 无害警告
         if "Destroyed while thread" in msg:
             return
-        print(f"[Qt] {msg}", flush=True)
+        # 致命错误也打印出来
+        prefix = "[Qt-FATAL]" if _msg_type == QtMsgType.QtFatalMsg else "[Qt]"
+        print(f"{prefix} {msg}", flush=True)
     qInstallMessageHandler(_qt_msg_handler)
 
     try:
@@ -184,6 +183,9 @@ def _do_main():
     app = QApplication(sys.argv)
     app.setApplicationName("Claw-Desktop")
     app.setOrganizationName("ClawTeam")
+
+    # 防止窗口意外关闭导致退出，便于诊断
+    app.setQuitOnLastWindowClosed(False)
 
     # --- 诊断：检查 Qt 插件路径 ---
     print(f"[Claw] Qt plugin path: {app.libraryPaths()}", flush=True)
@@ -237,11 +239,73 @@ def _do_main():
     print("[Claw] 显示窗口...", flush=True)
     window.show()
 
+    # 强制立即处理事件，测试首次绘制是否会崩溃
+    print("[Claw] DIAG: 强制 processEvents 测试...", flush=True)
+    app.processEvents()
+    print("[Claw] DIAG: processEvents 完成，首次绘制应该已完成", flush=True)
+
     # 启动时加载数据
     QTimer.singleShot(500, window.refresh_all)
 
+    # 诊断：追踪程序退出原因
+    def _on_about_to_quit():
+        import traceback as _tb
+        print("[Claw] !!! aboutToQuit 信号触发 !!!", flush=True)
+        _tb.print_stack()
+    app.aboutToQuit.connect(_on_about_to_quit)
+
+    # 零延时定时器：确认事件循环能否正常处理事件
+    def _diagnose_event_loop_ok():
+        print("[Claw] DIAG: 事件循环正在处理事件（零延时定时器触发成功）", flush=True)
+    QTimer.singleShot(0, _diagnose_event_loop_ok)
+
+    # 极短延时：确认首次绘制是否成功
+    def _diagnose_first_paint():
+        print("[Claw] DIAG: 100ms 后仍然存活（首次绘制应该已完成）", flush=True)
+    QTimer.singleShot(100, _diagnose_first_paint)
+
+    # === 心跳诊断：每分钟输出状态，追踪何时退出 ===
+    def _heartbeat():
+        from apps.desktop.workers.api_task import _SelfPreservingThread
+        active = len(_SelfPreservingThread._active_instances)
+        print(f"[Claw] HEARTBEAT: still alive, active_threads={active}, "
+              f"visible={window.isVisible()}, minimized={window.isMinimized()}", flush=True)
+    _heartbeat_timer = QTimer()
+    _heartbeat_timer.timeout.connect(_heartbeat)
+    _heartbeat_timer.start(60_000)  # 每 60 秒
+    print("[Claw] DIAG: 心跳定时器已启动 (每60秒)", flush=True)
+
+    # === 追踪 closeEvent 是否被意外触发 ===
+    _orig_close = window.closeEvent
+    def _close_wrapper(event):
+        import traceback as _tb
+        print("[Claw] DIAG: closeEvent 被触发！调用栈:", flush=True)
+        _tb.print_stack()
+        _orig_close(event)
+    window.closeEvent = _close_wrapper
+
+    # === atexit：追踪 Python 进程退出原因 ===
+    import atexit as _atexit
+    def _on_atexit():
+        import traceback as _tb
+        print("[Claw] DIAG: atexit 触发！进程正在退出", flush=True)
+        _tb.print_stack()
+    _atexit.register(_on_atexit)
+
     print("[Claw] 进入事件循环", flush=True)
-    sys.exit(app.exec())
+    print(f"[Claw] 诊断 - 窗口可见: {window.isVisible()}, 窗口最小化: {window.isMinimized()}", flush=True)
+    import time
+    _t0 = time.monotonic()
+    try:
+        exit_code = app.exec()
+        _elapsed = time.monotonic() - _t0
+        print(f"[Claw] 事件循环退出，退出码: {exit_code}, 运行时间: {_elapsed:.2f}s", flush=True)
+    except Exception as _exec_exc:
+        import traceback as _tb
+        print(f"[Claw] app.exec() 异常: {_exec_exc}", flush=True)
+        _tb.print_exc()
+        exit_code = 1
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

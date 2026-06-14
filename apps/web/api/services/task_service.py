@@ -147,6 +147,32 @@ class TaskService:
     def get_history_count(self) -> int:
         return len(self._history)
 
+    def delete_history(self, history_id: str) -> bool:
+        """删除指定历史记录（内存 + 数据库）"""
+        with self._lock:
+            # 从内存中删除
+            original_len = len(self._history)
+            self._history = [h for h in self._history if h.get("id") != history_id]
+            if len(self._history) == original_len:
+                return False
+
+        # 从数据库中删除
+        try:
+            db = self._ensure_db()
+            db.execute("DELETE FROM history WHERE id = ?", (history_id,))
+            db.commit()
+        except Exception as e:
+            logger.warning(f"从数据库删除历史记录失败: {e}")
+        return True
+
+    def batch_delete_history(self, history_ids: list[str]) -> int:
+        """批量删除历史记录，返回成功删除数量"""
+        count = 0
+        for hid in history_ids:
+            if self.delete_history(hid):
+                count += 1
+        return count
+
 
 # 全局单例
 task_service = TaskService()
