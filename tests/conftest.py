@@ -12,11 +12,10 @@ import json
 import uuid
 import shutil
 import tempfile
-import threading
 from pathlib import Path
 from datetime import datetime
 from io import BytesIO
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
@@ -42,10 +41,7 @@ def temp_dir():
     """创建临时目录，测试后自动清理"""
     tmp = Path(tempfile.mkdtemp(prefix="claw_test_"))
     yield tmp
-    try:
-        shutil.rmtree(tmp, ignore_errors=True)
-    except Exception:
-        pass
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 @pytest.fixture(scope="function")
@@ -61,7 +57,7 @@ def temp_env():
 # 测试图片生成 Fixtures
 # ──────────────────────────────────────────────────
 
-def create_test_image(size_kb: int = 20) -> bytes:
+def create_test_image() -> bytes:
     """生成一个有效的 JPEG 测试图片 (纯内存)"""
     from PIL import Image
     img = Image.new("RGB", (400, 300), color=(200, 180, 160))
@@ -165,8 +161,6 @@ def mock_ocr_result_jsonl():
 def mock_httpx_client():
     """Mock httpx.AsyncClient，返回预设的 OCR API 响应"""
     mock_client = AsyncMock()
-    mock_post = AsyncMock()
-    mock_get = AsyncMock()
 
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)

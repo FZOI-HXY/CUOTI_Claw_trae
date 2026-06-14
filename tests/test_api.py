@@ -20,7 +20,7 @@
 import sys
 import io
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -45,7 +45,6 @@ def api_client(temp_dir):
     original_upload = settings.upload_dir
     original_output = settings.output_dir
     original_log = settings.log_dir
-    original_max = settings.max_upload_size_mb
 
     settings.upload_dir = str(temp_dir / "uploads")
     settings.output_dir = str(temp_dir / "output")
@@ -83,6 +82,7 @@ def api_client(temp_dir):
         # submit_task 返回值 (每次调用生成不同 job_id)
         _submit_counter = [0]
         async def _mock_submit(*args, **kwargs):
+            del args, kwargs  # 匹配 mock side_effect 签名，参数未使用
             _submit_counter[0] += 1
             return {"success": True, "job_id": f"mock_job_{_submit_counter[0]:08d}"}
         mock_submit.side_effect = _mock_submit
@@ -223,7 +223,7 @@ class TestUploadAPI:
         assert data["original_name"] == "test.jpg"
         assert data["size"] > 0
 
-    def test_upload_png_image(self, api_client, temp_dir):
+    def test_upload_png_image(self, api_client):
         """上传 PNG 图片"""
         from PIL import Image
         img = Image.new("RGB", (100, 100), color=(50, 100, 200))

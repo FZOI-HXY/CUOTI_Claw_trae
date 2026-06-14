@@ -40,10 +40,13 @@ app = FastAPI(
     version="1.2.0",
 )
 
-# CORS 配置
+# CORS 配置（仅允许本机访问，桌面应用内嵌后端不暴露到外网）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://127.0.0.1:8500",
+        "http://localhost:8500",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,6 +61,34 @@ paddle_service = PaddleOCRService(
 markdown_generator = MarkdownGenerator(output_dir=settings.get_output_path())
 
 SYSTEM_START_TIME = datetime.now()
+
+
+# ============ 路径安全校验 ============
+
+def _safe_report_dir(report_id: str) -> Path:
+    """安全获取报告目录路径，防止路径穿越攻击
+    
+    将用户传入的 report_id 解析为 output_dir 下的绝对路径，
+    并验证解析后的路径严格位于 output_dir 子树内。
+    """
+    output_dir = settings.get_output_path().resolve()
+    report_dir = (output_dir / report_id).resolve()
+    # 确保解析后路径仍在 output_dir 内
+    try:
+        report_dir.relative_to(output_dir)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
+    return report_dir
+
+
+def _safe_report_image_path(report_dir: Path, image_name: str) -> Path:
+    """安全获取报告图片路径，防止路径穿越"""
+    img_path = (report_dir / image_name).resolve()
+    try:
+        img_path.relative_to(report_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"无效的图片路径: {image_name}")
+    return img_path
 
 
 # ============ 全局异常处理器 ============
@@ -213,7 +244,9 @@ async def upload_image(file: UploadFile = File(...)):
     try:
         upload_path = settings.get_upload_path()
         file_id = uuid.uuid4().hex
-        ext = Path(file.filename).suffix if file.filename else ".png"
+        # 安全提取扩展名：先取纯文件名（剥离路径分隔符），再取后缀
+        safe_name = Path(file.filename).name if file.filename else ""
+        ext = Path(safe_name).suffix or ".png"
         saved_name = f"{file_id}{ext}"
         saved_path = upload_path / saved_name
 
@@ -709,7 +742,9 @@ async def upload_images_batch(files: List[UploadFile] = File(...)):
 
             upload_path = settings.get_upload_path()
             file_id = uuid.uuid4().hex
-            ext = Path(file.filename).suffix if file.filename else ".png"
+            # 安全提取扩展名：先取纯文件名（剥离路径分隔符），再取后缀
+            safe_name = Path(file.filename).name if file.filename else ""
+            ext = Path(safe_name).suffix or ".png"
             saved_name = f"{file_id}{ext}"
             saved_path = upload_path / saved_name
 
@@ -779,7 +814,7 @@ async def list_reports(limit: int = Query(default=50, le=200)):
 @app.get("/api/report/{report_id}")
 async def get_report(report_id: str):
     """获取指定报告的 Markdown 内容"""
-    report_dir = settings.get_output_path() / report_id
+    report_dir = _safe_report_dir(report_id)
     md_file = report_dir / "report.md"
 
     if not md_file.exists():
@@ -794,7 +829,7 @@ async def get_report(report_id: str):
 @app.get("/api/report/{report_id}/download")
 async def download_report_zip(report_id: str):
     """下载报告的 ZIP 包"""
-    report_dir = settings.get_output_path() / report_id
+    report_dir = _safe_report_dir(report_id)
     md_file = report_dir / "report.md"
 
     if not md_file.exists():
@@ -934,8 +969,8 @@ async def download_batch_layout_report(request_data: dict):
 @app.get("/api/report/{report_id}/image/{image_name:path}")
 async def get_report_image(report_id: str, image_name: str):
     """获取报告中的图片文件"""
-    report_dir = settings.get_output_path() / report_id
-    img_path = report_dir / image_name
+    report_dir = _safe_report_dir(report_id)
+    img_path = _safe_report_image_path(report_dir, image_name)
 
     if not img_path.exists():
         raise HTTPException(status_code=404, detail="图片不存在")
@@ -956,7 +991,7 @@ async def get_report_image(report_id: str, image_name: str):
 @app.delete("/api/report/{report_id}")
 async def delete_report(report_id: str):
     """删除指定报告"""
-    report_dir = settings.get_output_path() / report_id
+    report_dir = _safe_report_dir(report_id)
     if not report_dir.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
 

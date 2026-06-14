@@ -51,9 +51,10 @@ def render_markdown_html(md: str, report_dir: str = "", api_base: str = "") -> s
             return f'<img src="{img_path}" alt="{alt}" width="34%" />'
         # 优先用 report_dir 解析为本地 file:// 路径
         if report_dir:
-            full = Path(report_dir) / img_path
+            full = (Path(report_dir) / img_path).resolve()
             if full.exists():
-                return f'<img src="file:///{full.resolve()}" alt="{alt}" width="34%" />'
+                # 用 as_uri() 生成跨平台兼容的 file:// URL（Windows 下自动转换反斜杠）
+                return f'<img src="{full.as_uri()}" alt="{alt}" width="34%" />'
         # 其次尝试通过 API 获取（需要 report_id）
         if api_base and report_dir:
             from pathlib import PurePath

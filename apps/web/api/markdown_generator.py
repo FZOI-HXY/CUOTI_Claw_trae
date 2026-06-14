@@ -1,6 +1,7 @@
 """
 错题管理系统 - Markdown文档生成器
-直接使用 PP-StructureV3 返回的结构化 Markdown，提取内嵌图片并保存。
+支持 PaddleOCR-VL-1.6 / PP-StructureV3 返回的结构化 Markdown，提取内嵌图片并保存。
+适配多模型输出格式（VL 系列的 layoutParsingResults 和 OCR 系列的 ocrResults）。
 """
 import base64
 import re
@@ -15,7 +16,7 @@ logger = setup_logger("MarkdownGenerator")
 
 
 class MarkdownGenerator:
-    """将 PP-StructureV3 返回的结果保存为结构化报告"""
+    """将 PaddleOCR-VL-1.6 / PP-StructureV3 等模型返回的结果保存为结构化报告"""
 
     def __init__(self, output_dir: Path):
         self.output_dir = output_dir
@@ -32,9 +33,9 @@ class MarkdownGenerator:
         processing_time: float = 0,
     ) -> str:
         """
-        基于 PP-StructureV3 返回的 markdown 构建完整报告。
+        基于 PaddleOCR-VL-1.6 / PP-StructureV3 返回的 markdown 构建完整报告。
 
-        PP-StructureV3 已经返回了完整的结构化 Markdown，
+        VL 系列 / PP-StructureV3 已经返回了完整的结构化 Markdown，
         这里只做两件事：
         1. 将内嵌 base64 图片的引用替换为本地文件引用
         2. 在文档头部添加元信息（来源、时间等）
@@ -133,7 +134,7 @@ class MarkdownGenerator:
             lines.append("")
 
         lines.append("---")
-        lines.append("*本文档由错题管理系统自动生成，基于 PaddleOCR PP-StructureV3*")
+        lines.append("*本文档由错题管理系统自动生成，基于 PaddleOCR-VL / PP-StructureV3*")
 
         report = "\n".join(lines)
         logger.info(f"报告构建完成，共 {len(report)} 字符")

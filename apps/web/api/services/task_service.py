@@ -56,20 +56,25 @@ class TaskService:
     # ---- 任务存储 ----
 
     def get_task(self, task_id: str) -> Optional[dict]:
-        return self._task_store.get(task_id)
+        with self._lock:
+            return self._task_store.get(task_id)
 
     def set_task(self, task_id: str, data: dict):
-        self._task_store[task_id] = data
+        with self._lock:
+            self._task_store[task_id] = data
 
     def update_task(self, task_id: str, **kwargs):
-        if task_id in self._task_store:
-            self._task_store[task_id].update(kwargs)
+        with self._lock:
+            if task_id in self._task_store:
+                self._task_store[task_id].update(kwargs)
 
     def has_task(self, task_id: str) -> bool:
-        return task_id in self._task_store
+        with self._lock:
+            return task_id in self._task_store
 
     def all_tasks(self) -> Dict[str, dict]:
-        return dict(self._task_store)
+        with self._lock:
+            return dict(self._task_store)
 
     # ---- 处理历史 ----
 
@@ -142,10 +147,12 @@ class TaskService:
 
     def get_history(self, limit: int = 50) -> List[dict]:
         """获取历史记录（最多 limit 条）"""
-        return self._history[:limit]
+        with self._lock:
+            return self._history[:limit]
 
     def get_history_count(self) -> int:
-        return len(self._history)
+        with self._lock:
+            return len(self._history)
 
     def delete_history(self, history_id: str) -> bool:
         """删除指定历史记录（内存 + 数据库）"""

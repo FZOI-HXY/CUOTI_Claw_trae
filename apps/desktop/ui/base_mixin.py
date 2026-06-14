@@ -105,17 +105,24 @@ class AppBaseMixin:
             return
         urls = md.urls()
         files_to_add = []
+        seen = set()
         for url in urls:
             path = url.toLocalFile()
             p = Path(path)
             if p.is_file():
-                files_to_add.append(str(p))
+                path_str = str(p)
+                if path_str not in seen:
+                    seen.add(path_str)
+                    files_to_add.append(path_str)
             elif p.is_dir():
+                # 按扩展名预过滤 glob，减少对非图片文件的 stat 调用
                 for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif']:
-                    for f in p.rglob(f"*{ext}"):
-                        files_to_add.append(str(f))
-                    for f in p.rglob(f"*{ext.upper()}"):
-                        files_to_add.append(str(f))
+                    for f in p.rglob(f'*{ext}'):
+                        if f.is_file():
+                            path_str = str(f)
+                            if path_str not in seen:
+                                seen.add(path_str)
+                                files_to_add.append(path_str)
         if files_to_add:
             self.add_files_to_queue(files_to_add)
 

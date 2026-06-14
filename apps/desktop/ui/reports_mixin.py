@@ -9,9 +9,9 @@ from typing import Any, TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QFileDialog, QMessageBox,
+    QHeaderView, QFileDialog, QMessageBox, QCheckBox,
 )
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QColor
 
 from apps.desktop.workers.api_task import ApiTask
@@ -35,12 +35,21 @@ class ReportsTabMixin:
     show_toast: Any
 
     def create_reports_tab(self):
+        # 用内部集合追踪选中的 report_id，不依赖 cellWidget/selectionModel 查询
+        self._selected_report_ids: set[str] = set()
+        self._all_report_ids: list[str] = []
+
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(12)
 
         action_bar = QHBoxLayout()
         action_bar.addStretch()
+        # 全选/取消全选
+        self.report_select_all_cb = QCheckBox("全选")
+        self.report_select_all_cb.setStyleSheet("color: #9ca3af; font-size: 13px;")
+        self.report_select_all_cb.stateChanged.connect(self._on_report_select_all_changed)
+        action_bar.addWidget(self.report_select_all_cb)
         self.batch_del_btn = QPushButton("批量删除")
         self.batch_del_btn.setEnabled(False)
         self.batch_del_btn.setStyleSheet(
@@ -57,26 +66,25 @@ class ReportsTabMixin:
         layout.addLayout(action_bar)
 
         self.reports_table = QTableWidget()
-        self.reports_table.setColumnCount(5)
+        self.reports_table.setColumnCount(6)  # +1 checkbox 列
         self.reports_table.setHorizontalHeaderLabels([
-            "报告ID", "创建时间", "包含Markdown", "大小", "操作"
+            "", "报告ID", "创建时间", "包含Markdown", "大小", "操作"
         ])
         hdr = self.reports_table.horizontalHeader()
         assert hdr is not None
-        # 报告ID固定宽度，不拉伸；操作列拉伸以容纳按钮
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.reports_table.setColumnWidth(0, 36)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.reports_table.setColumnWidth(2, 90)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        # 增大行高以容纳操作按钮
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.reports_table.setColumnWidth(3, 90)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         vhdr = self.reports_table.verticalHeader()
         assert vhdr is not None
         vhdr.setDefaultSectionSize(36)
-        self.reports_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        self.reports_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.reports_table.itemSelectionChanged.connect(self._on_report_selection_changed)
+        # 用 itemChanged 处理 checkbox 列变化（不依赖 selectionModel）
+        self.reports_table.itemChanged.connect(self._on_report_item_changed)
         layout.addWidget(self.reports_table)
 
         self.tab_widget.addTab(tab, "报告中心")
@@ -89,16 +97,32 @@ class ReportsTabMixin:
 
     def _on_reports_loaded(self, data: dict):
         reports = data.get("reports", []) or []
+        # 重置选中状态
+        self._selected_report_ids.clear()
+        self._all_report_ids.clear()
+
+        self.reports_table.blockSignals(True)
         self.reports_table.setRowCount(len(reports))
         for i, r in enumerate(reports):
-            self.reports_table.setItem(i, 0, QTableWidgetItem(str(r.get('id', ''))))
+            rid = r.get('id', '')
+            self._all_report_ids.append(rid)
+
+            # 列 0: 选择 checkbox（QTableWidgetItem + CheckState，可靠于 cellWidget QCheckBox）
+            cb_item = QTableWidgetItem()
+            cb_item.setFlags(cb_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            cb_item.setCheckState(Qt.CheckState.Unchecked)
+            cb_item.setData(Qt.ItemDataRole.UserRole, rid)
+            self.reports_table.setItem(i, 0, cb_item)
+
+            # 列 1-4: 数据列
+            self.reports_table.setItem(i, 1, QTableWidgetItem(str(rid)))
             created = r.get('created_time', '')
-            self.reports_table.setItem(i, 1, QTableWidgetItem(
+            self.reports_table.setItem(i, 2, QTableWidgetItem(
                 str(created)[:19] if created else ''))
             has_md = "是" if r.get('has_markdown') else "否"
             md_item = QTableWidgetItem(has_md)
             md_item.setForeground(QColor("#10b981") if r.get('has_markdown') else QColor("#8b95a8"))
-            self.reports_table.setItem(i, 2, md_item)
+            self.reports_table.setItem(i, 3, md_item)
 
             report_path = r.get('path', '')
             size_str = "-"
@@ -110,14 +134,14 @@ class ReportsTabMixin:
                         size_str = self._format_size(total_sz)
                 except Exception:
                     size_str = "-"
-            self.reports_table.setItem(i, 3, QTableWidgetItem(size_str))
+            self.reports_table.setItem(i, 4, QTableWidgetItem(size_str))
 
+            # 列 5: 操作按钮
             btn_widget = QWidget()
             btn_layout = QHBoxLayout(btn_widget)
             btn_layout.setContentsMargins(6, 4, 6, 4)
             btn_layout.setSpacing(8)
 
-            rid = r.get('id', '')
             view_btn = QPushButton("查看")
             view_btn.setMinimumWidth(60)
             view_btn.setStyleSheet(
@@ -148,9 +172,16 @@ class ReportsTabMixin:
             del_btn.clicked.connect(lambda checked, x=rid: self.delete_report(x))
             btn_layout.addWidget(del_btn)
 
-            self.reports_table.setCellWidget(i, 4, btn_widget)
-            # 确保行高足够容纳按钮
+            self.reports_table.setCellWidget(i, 5, btn_widget)
             self.reports_table.setRowHeight(i, 75)
+
+        self.reports_table.blockSignals(False)
+
+        # 重置全选状态并刷新按钮
+        self.report_select_all_cb.blockSignals(True)
+        self.report_select_all_cb.setChecked(False)
+        self.report_select_all_cb.blockSignals(False)
+        self._refresh_report_batch_del_state()
 
     def view_report_content(self, report_id: str):
         worker = ApiTask(self.api_base, "GET", f"/api/report/{report_id}")
@@ -204,21 +235,67 @@ class ReportsTabMixin:
         worker.error.connect(lambda e: self.show_toast(f"删除失败: {e}"))
         worker.start()
 
-    def _on_report_selection_changed(self):
-        """选中行变化时更新批量删除按钮状态"""
-        count = len(self.reports_table.selectedItems())
-        self.batch_del_btn.setEnabled(count > 0)
+    # ═══════════════════════════════════════════════════════
+    #  选择状态管理（基于内部集合，不依赖 cellWidget/selectionModel 查询）
+    # ═══════════════════════════════════════════════════════
+
+    def _on_report_item_changed(self, item: QTableWidgetItem):
+        """checkbox 列 (col 0) 的 checkState 变化时更新内部集合"""
+        if item.column() != 0:
+            return
+        rid = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(rid, str):
+            return
+        is_checked = item.checkState() == Qt.CheckState.Checked
+        if is_checked:
+            self._selected_report_ids.add(rid)
+        else:
+            self._selected_report_ids.discard(rid)
+        self._refresh_report_batch_del_state()
+
+    def _refresh_report_batch_del_state(self):
+        """根据内部集合更新批量删除按钮 + 全选 checkbox 状态"""
+        count = len(self._selected_report_ids)
+        total = len(self._all_report_ids)
+        has = count > 0
+        self.batch_del_btn.setEnabled(has)
+        self.batch_del_btn.setText(f"批量删除 ({count})" if has else "批量删除")
+
+        self.report_select_all_cb.blockSignals(True)
+        if total == 0:
+            self.report_select_all_cb.setChecked(False)
+        elif count == total:
+            self.report_select_all_cb.setChecked(True)
+        elif count > 0:
+            self.report_select_all_cb.setTristate(True)
+            self.report_select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
+        else:
+            self.report_select_all_cb.setChecked(False)
+        self.report_select_all_cb.blockSignals(False)
+
+    def _on_report_select_all_changed(self, state: int):
+        """全选 checkbox 变化：同步所有行 checkbox + 更新内部集合"""
+        checked = (state == Qt.CheckState.Checked.value)
+        if checked:
+            self._selected_report_ids = set(self._all_report_ids)
+        else:
+            self._selected_report_ids.clear()
+        self.reports_table.blockSignals(True)
+        for i in range(self.reports_table.rowCount()):
+            item = self.reports_table.item(i, 0)
+            if item is not None:
+                item.setCheckState(
+                    Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+                )
+        self.reports_table.blockSignals(False)
+        self._refresh_report_batch_del_state()
 
     def batch_delete_reports(self):
-        selected_rows = set(item.row() for item in self.reports_table.selectedItems())
-        if not selected_rows:
+        if not self._selected_report_ids:
+            self.show_toast("请先勾选要删除的报告")
             return
 
-        report_ids = []
-        for row in sorted(selected_rows):
-            id_item = self.reports_table.item(row, 0)
-            if id_item:
-                report_ids.append(id_item.text())
+        report_ids = sorted(self._selected_report_ids)
 
         reply = QMessageBox.question(
             self,  # type: ignore[arg-type]

@@ -3,12 +3,10 @@
 """
 
 import logging
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
+# 路径由 conftest.py 统一设置（apps/web/api），此处无需重复添加
 
 
 @pytest.mark.unit
