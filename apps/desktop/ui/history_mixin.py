@@ -9,9 +9,10 @@ from typing import Any, TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox,
+    QHeaderView, QMessageBox, QCheckBox,
 )
 from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt
 
 from apps.desktop.workers.api_task import ApiTask
 
@@ -36,12 +37,20 @@ class HistoryTabMixin:
     show_toast: Any
 
     def create_history_tab(self):
+        # 用内部集合追踪选中的 history_id，不依赖 cellWidget 状态查询
+        self._selected_ids: set[str] = set()
+        self._all_history_ids: list[str] = []  # 按表格行顺序存储
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(12)
 
         action_bar = QHBoxLayout()
         action_bar.addStretch()
+        # 全选/取消全选
+        self.select_all_cb = QCheckBox("全选")
+        self.select_all_cb.setStyleSheet("color: #9ca3af; font-size: 13px;")
+        self.select_all_cb.stateChanged.connect(self._on_select_all_changed)
+        action_bar.addWidget(self.select_all_cb)
         self.batch_del_btn = QPushButton("批量删除")
         self.batch_del_btn.setEnabled(False)
         self.batch_del_btn.setStyleSheet(
@@ -58,30 +67,48 @@ class HistoryTabMixin:
         layout.addLayout(action_bar)
 
         self.history_table = QTableWidget()
-        self.history_table.setColumnCount(7)
+        self.history_table.setColumnCount(8)  # +1 checkbox 列
         self.history_table.setHorizontalHeaderLabels([
-            "编号", "文件名", "时间", "状态", "耗时(s)", "图片数", "操作"
+            "", "编号", "文件名", "时间", "状态", "耗时(s)", "图片数", "操作"
         ])
         header = self.history_table.horizontalHeader()
         assert header is not None
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.history_table.setColumnWidth(3, 50)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.history_table.setColumnWidth(0, 36)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.history_table.setColumnWidth(4, 50)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
         vhdr = self.history_table.verticalHeader()
         assert vhdr is not None
         vhdr.setDefaultSectionSize(36)
+        # 不再依赖行选择模式，改用 checkbox 列控制批量操作
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.history_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        # 使用 selectionModel().selectionChanged 替代 itemSelectionChanged
-        # itemSelectionChanged 在 SelectRows + cellWidget 组合下不可靠
-        sm = self.history_table.selectionModel()
-        if sm is not None:
-            sm.selectionChanged.connect(self._on_history_selection_changed)
+        self.history_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+
+        # 暗色样式
+        self.history_table.setStyleSheet(
+            "QTableWidget {"
+            "  gridline-color: #2d3748;"
+            "  background: #111827; color: #e8ecf1;"
+            "  border: 1px solid #2d3748; border-radius: 4px;"
+            "}"
+            "QTableWidget::section {"
+            "  background: #1a2235; color: #9ca3af; padding: 6px 8px;"
+            "  border: none; border-bottom: 1px solid #2d3748;"
+            "  border-right: 1px solid #2d3748; font-weight: 600;"
+            "}"
+            "QTableCornerButton::section {"
+            "  background: #1a2235; color: #9ca3af;"
+            "  border: 1px solid #2d3748; border-top-left-radius: 3px;"
+            "}"
+        )
+        # 用 itemChanged 处理 checkbox 列变化（比 cellWidget QCheckBox 可靠得多）
+        self.history_table.itemChanged.connect(self._on_table_item_changed)
         layout.addWidget(self.history_table)
 
         self.tab_widget.addTab(tab, "处理记录")
@@ -92,29 +119,104 @@ class HistoryTabMixin:
         worker.error.connect(lambda e: self._show_status(f"加载历史失败: {e}"))
         worker.start()
 
+    # ═══════════════════════════════════════════════════════
+    #  选择状态管理（基于内部集合，不依赖 cellWidget 查询）
+    # ═══════════════════════════════════════════════════════
+
+    def _toggle_row_selection(self, history_id: str, checked: bool):
+        """单行 checkbox 变化时更新内部选中集合"""
+        if checked:
+            self._selected_ids.add(history_id)
+        else:
+            self._selected_ids.discard(history_id)
+        self._refresh_batch_del_state()
+
+    def _refresh_batch_del_state(self):
+        """根据内部集合更新批量删除按钮 + 全选 checkbox 状态"""
+        count = len(self._selected_ids)
+        total = len(self._all_history_ids)
+        has = count > 0
+        self.batch_del_btn.setEnabled(has)
+        self.batch_del_btn.setText(f"批量删除 ({count})" if has else "批量删除")
+
+        # 同步全选 checkbox（不触发信号）
+        self.select_all_cb.blockSignals(True)
+        if total == 0:
+            self.select_all_cb.setChecked(False)
+        elif count == total:
+            self.select_all_cb.setChecked(True)
+        elif count > 0:
+            self.select_all_cb.setTristate(True)
+            self.select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
+        else:
+            self.select_all_cb.setChecked(False)
+        self.select_all_cb.blockSignals(False)
+
+    def _on_select_all_changed(self, state: int):
+        """全选 checkbox 变化：同步所有行 checkbox + 更新内部集合"""
+        checked = (state == Qt.CheckState.Checked.value)
+        if checked:
+            self._selected_ids = set(self._all_history_ids)
+        else:
+            self._selected_ids.clear()
+        # 通过 QTableWidgetItem.CheckState 同步每个行 checkbox（不触发 itemChanged）
+        self.history_table.blockSignals(True)
+        for i in range(self.history_table.rowCount()):
+            item = self.history_table.item(i, 0)
+            if item is not None:
+                item.setCheckState(
+                    Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+                )
+        self.history_table.blockSignals(False)
+        self._refresh_batch_del_state()
+
+    def _on_table_item_changed(self, item: QTableWidgetItem):
+        """checkbox 列 (col 0) 的 checkState 变化时更新内部集合"""
+        if item.column() != 0:
+            return
+        history_id = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(history_id, str):
+            return
+        is_checked = item.checkState() == Qt.CheckState.Checked
+        self._toggle_row_selection(history_id, is_checked)
+
     def _on_history_loaded(self, data: dict):
         try:
             items = data.get("items", []) or []
-            # 阻止填充期间触发 itemSelectionChanged 信号
+            # 重置选中状态
+            self._selected_ids.clear()
+            self._all_history_ids.clear()
+
             self.history_table.blockSignals(True)
             self.history_table.setRowCount(len(items))
             for i, item in enumerate(items):
                 history_id = item.get('id', '')
-                self.history_table.setItem(i, 0, QTableWidgetItem(f"#{history_id}"))
+                self._all_history_ids.append(history_id)
+
+                # 列 0: 选择 checkbox（用 QTableWidgetItem + CheckState，比 cellWidget QCheckBox 可靠）
+                cb_item = QTableWidgetItem()
+                cb_item.setFlags(cb_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                cb_item.setCheckState(Qt.CheckState.Unchecked)
+                cb_item.setData(Qt.ItemDataRole.UserRole, history_id)
+                self.history_table.setItem(i, 0, cb_item)
+
+                # 列 1-5: 数据列
+                self.history_table.setItem(i, 1, QTableWidgetItem(f"#{history_id}"))
                 fname = item.get('filename', '')
-                self.history_table.setItem(i, 1, QTableWidgetItem(
-                    fname[:40] + '...' if len(fname) > 40 else fname))
                 self.history_table.setItem(i, 2, QTableWidgetItem(
+                    fname[:40] + '...' if len(fname) > 40 else fname))
+                self.history_table.setItem(i, 3, QTableWidgetItem(
                     item.get('timestamp', '')[:19]))
                 status = "成功" if item.get('success') else "失败"
                 sitem = QTableWidgetItem(status)
                 sitem.setForeground(QColor("#10b981") if item.get('success') else QColor("#ef4444"))
-                self.history_table.setItem(i, 3, sitem)
-                self.history_table.setItem(i, 4, QTableWidgetItem(
-                    str(item.get('processing_time', 0))))
+                self.history_table.setItem(i, 4, sitem)
                 self.history_table.setItem(i, 5, QTableWidgetItem(
+                    str(item.get('processing_time', 0))))
+                self.history_table.setItem(i, 6, QTableWidgetItem(
                     str(item.get('images_count', 0))))
 
+                # 列 7: 操作按钮
                 btn_widget = QWidget()
                 btn_layout = QHBoxLayout(btn_widget)
                 btn_layout.setContentsMargins(6, 4, 6, 4)
@@ -153,17 +255,21 @@ class HistoryTabMixin:
                 del_btn.clicked.connect(lambda checked, hid=history_id: self.delete_history(hid))
                 btn_layout.addWidget(del_btn)
 
-                self.history_table.setCellWidget(i, 6, btn_widget)
+                self.history_table.setCellWidget(i, 7, btn_widget)
                 self.history_table.setRowHeight(i, 75)
-            # 恢复信号
+
             self.history_table.blockSignals(False)
         except Exception as e:
             self.history_table.blockSignals(False)
             import traceback
             print(f"[Claw] _on_history_loaded 异常: {e}", flush=True)
             traceback.print_exc()
-        # 显式刷新批量删除按钮状态（确保与当前选择一致）
-        self._on_history_selection_changed()
+
+        # 重置全选状态并刷新按钮
+        self.select_all_cb.blockSignals(True)
+        self.select_all_cb.setChecked(False)
+        self.select_all_cb.blockSignals(False)
+        self._refresh_batch_del_state()
 
     def delete_history(self, history_id: str):
         reply = QMessageBox.question(
@@ -183,32 +289,12 @@ class HistoryTabMixin:
         worker.error.connect(lambda e: self.show_toast(f"删除失败: {e}"))
         worker.start()
 
-    def _on_history_selection_changed(self, *_args):
-        """选中行变化时更新批量删除按钮状态"""
-        try:
-            sm = self.history_table.selectionModel()
-            if sm is None:
-                return
-            count = len(sm.selectedRows())
-            self.batch_del_btn.setEnabled(count > 0)
-        except Exception:
-            pass
-
     def batch_delete_history(self):
-        sm = self.history_table.selectionModel()
-        if sm is None:
-            return
-        selected_rows = sorted(set(index.row() for index in sm.selectedRows()))
-        if not selected_rows:
+        if not self._selected_ids:
+            self.show_toast("请先勾选要删除的记录")
             return
 
-        history_ids = []
-        for row in sorted(selected_rows):
-            id_item = self.history_table.item(row, 0)
-            if id_item:
-                text = id_item.text()
-                # 去掉前缀 #
-                history_ids.append(text.lstrip('#'))
+        history_ids = sorted(self._selected_ids)
 
         reply = QMessageBox.question(
             self,  # type: ignore[arg-type]
