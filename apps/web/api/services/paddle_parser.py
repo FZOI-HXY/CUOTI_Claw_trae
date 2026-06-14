@@ -182,7 +182,7 @@ def _extract_ocr_items(json_obj) -> list:
     if layout_results:
         return layout_results
 
-    # PP-OCRv5: 只有 ocrResults
+    # PP-OCRv6 / PP-OCRv5: 只有 ocrResults
     ocr_results = result.get("ocrResults", [])
     if ocr_results:
         return ocr_results

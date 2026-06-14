@@ -7,12 +7,11 @@
   - 环境变量覆盖
 """
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
+# 路径由 conftest.py 统一设置（apps/web/api），此处无需重复添加
 
 
 @pytest.mark.unit
@@ -23,7 +22,7 @@ class TestSettingsDefaults:
 
     def test_default_model(self):
         from config import settings
-        assert settings.paddleocr_model == "PP-StructureV3"
+        assert settings.paddleocr_model == "PaddleOCR-VL-1.6"
 
     def test_default_host_port(self):
         from config import settings
@@ -91,4 +90,4 @@ class TestEnvFilePath:
     def test_env_file_path_backend_dir(self):
         from config import ENV_FILE_PATH
         parent_name = ENV_FILE_PATH.parent.name
-        assert parent_name == "backend"
+        assert parent_name == "api"  # config.py 位于 apps/web/api/

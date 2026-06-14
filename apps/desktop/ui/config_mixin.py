@@ -414,8 +414,10 @@ class ConfigTabMixin:
         """测试 API 连接并在卡片内显示结果"""
         self._api_test_result.setText("⏳ 正在测试...")
         self._api_test_result.setObjectName("")
-        self._api_test_result.style().unpolish(self._api_test_result)  # type: ignore[union-attr]
-        self._api_test_result.style().polish(self._api_test_result)  # type: ignore[union-attr]
+        s = self._api_test_result.style()
+        if s is not None:
+            s.unpolish(self._api_test_result)
+            s.polish(self._api_test_result)
         self._set_badge(self._api_status_badge, "badgeWarning", "⏳ 测试中...")
 
         worker = ApiTask(self.api_base, "GET", "/api/health")

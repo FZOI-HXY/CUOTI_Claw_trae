@@ -3,15 +3,16 @@
 基于百度AI Studio PaddleOCR官方API
 
 支持模型:
-  - PaddleOCR-VL-1.6 / PaddleOCR-VL-1.5（多模态文档结构化分析，推荐）
+  - PaddleOCR-VL-1.6 / PaddleOCR-VL-1.5 / PaddleOCR-VL（多模态文档结构化分析，推荐）
   - PP-StructureV3（文档结构化分析）
   - PP-OCRv6 / PP-OCRv5（文字识别）
 
 官方API流程:
   1. POST multipart/form-data 提交本地文件（或 fileUrl）到 /api/v2/ocr/jobs，获取 jobId
   2. GET /api/v2/ocr/jobs/{jobId} 轮询任务状态
-  3. state=done 后，从 resultUrl.jsonUrl 下载 JSONL 结果
-  4. JSONL 每行一个 JSON，result.layoutParsingResults[].markdown.text/images 提取内容
+  3. state=done 后，从 resultUrl.jsonUrl 下载 JSONL / markdownUrl 下载 Markdown
+  4. VL/Structure 模型: result.layoutParsingResults[].markdown.text/images 提取内容
+     OCR 模型: result.ocrResults[].ocrImage 提取文字识别结果
 
 参考文档: https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5
 """
@@ -59,7 +60,12 @@ class PaddleOCRService:
     """
     PaddleOCR API 服务封装
     使用百度AI Studio 官方API（异步模式）
-    提交任务 → 获取 jobId → 轮询结果 → 下载 JSON
+    提交任务 → 获取 jobId → 轮询结果 → 下载 JSON/Markdown
+
+    模型分组:
+      VL_MODELS:     PaddleOCR-VL-1.6, VL-1.5, VL（文档结构化+图表识别）
+      STRUCTURE_MODELS: PP-StructureV3（文档结构化）
+      OCR_MODELS:    PP-OCRv6, PP-OCRv5, PP-OCRv4（纯文字识别）
     """
 
     def __init__(self, api_url: str = "", api_key: str = "", model: str = "PaddleOCR-VL-1.6"):
@@ -77,10 +83,13 @@ class PaddleOCRService:
         """
         根据模型类型返回对应的 optionalPayload 参数
 
-        - VL 系列 / PP-StructureV3: useDocOrientationClassify, useDocUnwarping, useChartRecognition
-        - PP-OCRv6/v5: useDocOrientationClassify, useDocUnwarping, useTextlineOrientation
+        - PaddleOCR-VL-1.6 / VL-1.5 / VL / PP-StructureV3（文档结构化）:
+            useDocOrientationClassify, useDocUnwarping, useChartRecognition
+        - PP-OCRv6 / PP-OCRv5（纯文字识别）:
+            useDocOrientationClassify, useDocUnwarping, useTextlineOrientation
 
-        注意: useTextlineOrientation 是 OCR 模型专用参数，VL/Structure 模型使用 useChartRecognition
+        注意: PaddleOCR-VL-1.6 新增字段（如需要）可在此扩展；
+              useTextlineOrientation 是 OCR 模型专用，VL/Structure 模型不可使用。
         """
         if self.model in VL_MODELS or self.model in STRUCTURE_MODELS:
             return {
@@ -99,8 +108,8 @@ class PaddleOCRService:
     def _get_result_field_name(self) -> str:
         """
         根据模型返回结果 JSON 中的主字段名
-        - VL 系列 / PP-StructureV3 返回 layoutParsingResults
-        - PP-OCRv6/v5 返回 ocrResults
+        - PaddleOCR-VL-1.6 / VL-1.5 / VL / PP-StructureV3 → layoutParsingResults
+        - PP-OCRv6 / PP-OCRv5 → ocrResults
         """
         if self.model in VL_MODELS or self.model in STRUCTURE_MODELS:
             return "layoutParsingResults"
@@ -187,8 +196,9 @@ class PaddleOCRService:
                     result = response.json()
             else:
                 # 方式2: multipart/form-data 上传本地文件
-                # image_data 在此分支必然非空（已在函数入口校验）
-                assert image_data is not None
+                # image_data 在此分支必须非空（已在函数入口校验，此处做防御性检查）
+                if image_data is None:
+                    return {"success": False, "error": "内部错误：image_data 为空", "filename": filename}
                 # optionalPayload 在 form-data 中需要是 JSON 字符串
                 data = {
                     "model": self.model,
