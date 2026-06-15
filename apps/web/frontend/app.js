@@ -819,7 +819,9 @@
             if (window.MathJax && window.MathJax.typesetClear) {
                 window.MathJax.typesetClear([dom.mdContent]);
             }
-            dom.mdContent.innerHTML = renderMarkdown(data.markdown_text);
+            // 从 report_dir 提取 report_id（如 "c:\...\20260609_112608" → "20260609_112608"）
+            const reportId = data.report_dir ? data.report_dir.split(/[\\/]/).pop() : null;
+            dom.mdContent.innerHTML = renderMarkdown(data.markdown_text, reportId);
             if (window.MathJax && window.MathJax.typesetPromise) {
                 window.MathJax.typesetPromise([dom.mdContent]).catch((err) => console.error('MathJax typeset error:', err));
             }
@@ -838,8 +840,27 @@
         return div.innerHTML;
     }
 
-    function renderMarkdown(md) {
+    function renderMarkdown(md, reportId) {
+        // 解析图片路径：如果提供了 reportId，将相对路径映射到 API 端点
+        function resolveImagePath(src) {
+            if (!src || src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:')) {
+                return src;
+            }
+            if (reportId) {
+                // 去掉可能的前导 ./ 或多余的 imgs/ 前缀（统一由 API 处理）
+                let cleanSrc = src.replace(/^\.\//, '');
+                return `${API_BASE}/api/report/${reportId}/image/${encodeURI(cleanSrc)}`;
+            }
+            return src;
+        }
+
         let html = md
+            // 先处理 HTML img 标签（PP-StructureV3 输出中可能包含）
+            .replace(/<img\s+src="([^"]+)"(?:\s+alt="([^"]*)")?[^>]*\/?>/gi,
+                (match, src, alt) => `<img src="${resolveImagePath(src)}" alt="${alt || ''}">`)
+            // Markdown 图片 ![alt](src)
+            .replace(/!\[([^\]]*)\]\(([^)]+)\)/g,
+                (match, alt, src) => `<img src="${resolveImagePath(src)}" alt="${alt || ''}">`)
             .replace(/^### (.+)$/gm, '<h3>$1</h3>')
             .replace(/^## (.+)$/gm, '<h2>$1</h2>')
             .replace(/^# (.+)$/gm, '<h1>$1</h1>')
@@ -1090,7 +1111,7 @@
             if (window.MathJax && window.MathJax.typesetClear) {
                 window.MathJax.typesetClear([dom.mdContent]);
             }
-            dom.mdContent.innerHTML = renderMarkdown(data.content);
+            dom.mdContent.innerHTML = renderMarkdown(data.content, reportId);
             dom.markdownPreview.style.display = 'block';
             if (window.MathJax && window.MathJax.typesetPromise) {
                 window.MathJax.typesetPromise([dom.mdContent]).catch((err) => console.error('MathJax typeset error:', err));

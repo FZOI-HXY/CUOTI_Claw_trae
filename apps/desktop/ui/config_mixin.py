@@ -450,23 +450,14 @@ class ConfigTabMixin:
     #  服务器状态检查（供外部定时调用）
     # ═══════════════════════════════════════════════════════
 
-    _status_check_count = 0
-
     def check_server_status(self):
         # 窗口正在关闭，不再发起新请求
         if getattr(self, '_shutting_down', False):
             return
 
-        ConfigTabMixin._status_check_count += 1
-        cnt = ConfigTabMixin._status_check_count
-        print(f"[Claw] DIAG: check_server_status #{cnt} 开始", flush=True)
-
         try:
             worker = ApiTask(self.api_base, "GET", "/api/health")
-        except Exception as e:
-            print(f"[Claw] DIAG: check_server_status #{cnt} ApiTask创建失败: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
+        except Exception:
             return
 
         def _on_done(data):
@@ -479,25 +470,18 @@ class ConfigTabMixin:
                 else:
                     self.server_status_label.setText("🟡 服务异常")
                     self.server_status_label.setStyleSheet("color: #f59e0b; font-size: 11px;")
-                print(f"[Claw] DIAG: check_server_status #{cnt} _on_done OK", flush=True)
-            except Exception as _ex:
-                print(f"[Claw] DIAG: check_server_status #{cnt} _on_done 异常: {_ex}", flush=True)
-                import traceback
-                traceback.print_exc()
+            except Exception:
+                pass
 
-        def _on_error(err_msg):
+        def _on_error(_err_msg):
             if getattr(self, '_shutting_down', False):
                 return
             try:
                 self.server_status_label.setText("🔴 连接断开")
                 self.server_status_label.setStyleSheet("color: #ef4444; font-size: 11px;")
-                print(f"[Claw] DIAG: check_server_status #{cnt} _on_error: {err_msg}", flush=True)
-            except Exception as _ex:
-                print(f"[Claw] DIAG: check_server_status #{cnt} _on_error 异常: {_ex}", flush=True)
-                import traceback
-                traceback.print_exc()
+            except Exception:
+                pass
 
         worker.finished.connect(_on_done)
         worker.error.connect(_on_error)
         worker.start()
-        print(f"[Claw] DIAG: check_server_status #{cnt} worker已启动", flush=True)
