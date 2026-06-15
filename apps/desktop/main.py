@@ -139,16 +139,14 @@ class StandaloneApp(
                 w.quit()
                 w.wait(1000)
         event.accept()
-        # 由于 setQuitOnLastWindowClosed(False)，需要显式退出
-        print("[Claw] DIAG: closeEvent 即将调用 QApplication.quit()", flush=True)
         QApplication.quit()
 
 
 def main():
-    # === SIGSEGV 诊断：faulthandler 捕获 C 层崩溃堆栈 ===
+    # SIGSEGV handler for C-level crash stack traces
     import faulthandler, signal
     faulthandler.enable()
-    # 尝试为 Windows 注册信号处理器（部分信号在 Windows 可能不可用）
+    # Windows does not support all POSIX signals; ignore failure
     try:
         faulthandler.register(signal.SIGSEGV)
     except AttributeError:
@@ -184,11 +182,7 @@ def _do_main():
     app.setApplicationName("Claw-Desktop")
     app.setOrganizationName("ClawTeam")
 
-    # 防止窗口意外关闭导致退出，便于诊断
     app.setQuitOnLastWindowClosed(False)
-
-    # --- 诊断：检查 Qt 插件路径 ---
-    print(f"[Claw] Qt plugin path: {app.libraryPaths()}", flush=True)
 
     # --- 启动内嵌后端服务 ---
     print("[Claw] 正在启动内嵌后端服务...", flush=True)
@@ -239,61 +233,12 @@ def _do_main():
     print("[Claw] 显示窗口...", flush=True)
     window.show()
 
-    # 强制立即处理事件，测试首次绘制是否会崩溃
-    print("[Claw] DIAG: 强制 processEvents 测试...", flush=True)
     app.processEvents()
-    print("[Claw] DIAG: processEvents 完成，首次绘制应该已完成", flush=True)
 
     # 启动时加载数据
     QTimer.singleShot(500, window.refresh_all)
 
-    # 诊断：追踪程序退出原因
-    def _on_about_to_quit():
-        import traceback as _tb
-        print("[Claw] !!! aboutToQuit 信号触发 !!!", flush=True)
-        _tb.print_stack()
-    app.aboutToQuit.connect(_on_about_to_quit)
-
-    # 零延时定时器：确认事件循环能否正常处理事件
-    def _diagnose_event_loop_ok():
-        print("[Claw] DIAG: 事件循环正在处理事件（零延时定时器触发成功）", flush=True)
-    QTimer.singleShot(0, _diagnose_event_loop_ok)
-
-    # 极短延时：确认首次绘制是否成功
-    def _diagnose_first_paint():
-        print("[Claw] DIAG: 100ms 后仍然存活（首次绘制应该已完成）", flush=True)
-    QTimer.singleShot(100, _diagnose_first_paint)
-
-    # === 心跳诊断：每分钟输出状态，追踪何时退出 ===
-    def _heartbeat():
-        from apps.desktop.workers.api_task import _SelfPreservingThread
-        active = len(_SelfPreservingThread._active_instances)
-        print(f"[Claw] HEARTBEAT: still alive, active_threads={active}, "
-              f"visible={window.isVisible()}, minimized={window.isMinimized()}", flush=True)
-    _heartbeat_timer = QTimer()
-    _heartbeat_timer.timeout.connect(_heartbeat)
-    _heartbeat_timer.start(60_000)  # 每 60 秒
-    print("[Claw] DIAG: 心跳定时器已启动 (每60秒)", flush=True)
-
-    # === 追踪 closeEvent 是否被意外触发 ===
-    _orig_close = window.closeEvent
-    def _close_wrapper(event):
-        import traceback as _tb
-        print("[Claw] DIAG: closeEvent 被触发！调用栈:", flush=True)
-        _tb.print_stack()
-        _orig_close(event)
-    window.closeEvent = _close_wrapper
-
-    # === atexit：追踪 Python 进程退出原因 ===
-    import atexit as _atexit
-    def _on_atexit():
-        import traceback as _tb
-        print("[Claw] DIAG: atexit 触发！进程正在退出", flush=True)
-        _tb.print_stack()
-    _atexit.register(_on_atexit)
-
     print("[Claw] 进入事件循环", flush=True)
-    print(f"[Claw] 诊断 - 窗口可见: {window.isVisible()}, 窗口最小化: {window.isMinimized()}", flush=True)
     import time
     _t0 = time.monotonic()
     try:

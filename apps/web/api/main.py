@@ -867,15 +867,28 @@ async def download_batch_zip(request_data: dict):
 
     output_root = settings.get_output_path()
     zip_buffer = io.BytesIO()
+    image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for report_id in report_ids:
             report_dir = output_root / report_id
             if not report_dir.exists():
                 logger.warning(f"批量下载: 报告目录不存在 {report_id}")
                 continue
+            # 打包根目录文件
             for file_path in report_dir.iterdir():
-                if file_path.is_file():
+                if file_path.is_file() and file_path.suffix.lower() in image_extensions:
                     zf.write(file_path, f"{report_id}/{file_path.name}")
+                elif file_path.is_file() and file_path.name != "report.md":
+                    zf.write(file_path, f"{report_id}/{file_path.name}")
+            # 打包 imgs/ 子目录（保留路径结构）
+            md_file = report_dir / "report.md"
+            if md_file.exists():
+                zf.write(md_file, f"{report_id}/report.md")
+            imgs_dir = report_dir / "imgs"
+            if imgs_dir.exists():
+                for file_path in imgs_dir.iterdir():
+                    if file_path.is_file() and file_path.suffix.lower() in image_extensions:
+                        zf.write(file_path, f"{report_id}/imgs/{file_path.name}")
 
     zip_buffer.seek(0)
     logger.info(f"批量下载: {len(report_ids)} 个报告已打包")

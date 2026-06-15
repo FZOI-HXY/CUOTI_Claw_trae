@@ -237,11 +237,24 @@ class MarkdownGenerator:
         PP-StructureV3 返回的 Markdown 中图片可能是:
         - ![](img_0) 形式（引用 images 字典中的 key）
         - ![](data:image/png;base64,...) 形式（直接内嵌）
+        - <img src="img_key" /> 形式（HTML 标签，PP-StructureV3 常用）
         
         替换为本地文件引用，便于后续保存和查看。
         """
         if not images:
             return markdown_text
+
+        def _resolve_path(img_key: str) -> str:
+            """将 images 字典中的 key 映射为本地文件路径"""
+            if img_key in images:
+                safe_name = self._safe_image_name(img_key)
+                return f"imgs/{safe_name}"
+            # 如果 key 包含路径分隔符（如 imgs/img_xxx），也尝试匹配
+            bare_key = img_key.replace("imgs/", "").replace("imgs\\", "")
+            if bare_key in images:
+                safe_name = self._safe_image_name(bare_key)
+                return f"imgs/{safe_name}"
+            return ""
 
         def replace_ref(match):
             alt = match.group(1)  # alt 文本
@@ -256,15 +269,32 @@ class MarkdownGenerator:
 
             # img_0, img_1 等引用
             img_key = ref.strip()
-            if img_key in images:
-                safe_name = self._safe_image_name(img_key)
-                rel_path = f"imgs/{safe_name}"
-                return f"![{alt or img_key}]({rel_path})"
+            local_path = _resolve_path(img_key)
+            if local_path:
+                return f"![{alt or img_key}]({local_path})"
 
+            return match.group(0)
+
+        def replace_html_img(match):
+            """替换 <img src="..."> HTML 标签中的 src 路径"""
+            src = match.group(1)  # src 属性值
+            # 跳过外部URL 和 data: URI
+            if src.startswith("http://") or src.startswith("https://") or src.startswith("data:"):
+                return match.group(0)
+            img_key = src.strip()
+            local_path = _resolve_path(img_key)
+            if local_path:
+                return match.group(0).replace(f'src="{src}"', f'src="{local_path}"')
             return match.group(0)
 
         # 替换 ![](ref) 形式
         markdown_text = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', replace_ref, markdown_text)
+        # 替换 <img src="ref" ...> 形式（PP-StructureV3 返回的 HTML 标签）
+        markdown_text = re.sub(
+            r'<img\s+src="([^"]+)"',
+            replace_html_img,
+            markdown_text,
+        )
 
         return markdown_text
 
@@ -395,7 +425,7 @@ class MarkdownGenerator:
                 with open(orig_path, "wb") as f:
                     f.write(original_image_data)
 
-            # 5. 保存 API 原始返回（调试用）
+            # 5. 保存 API 原始返回
             if structure_result:
                 api_path = report_dir / "api_response.json"
                 with open(api_path, "w", encoding="utf-8") as f:
