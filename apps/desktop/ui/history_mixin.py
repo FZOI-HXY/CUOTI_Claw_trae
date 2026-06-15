@@ -47,26 +47,27 @@ class HistoryTabMixin:
         action_bar = QHBoxLayout()
         action_bar.addStretch()
         # 全选/取消全选
-        self.select_all_cb = QCheckBox("全选")
-        self.select_all_cb.setStyleSheet("color: #9ca3af; font-size: 13px;")
-        self.select_all_cb.stateChanged.connect(self._on_select_all_changed)
-        action_bar.addWidget(self.select_all_cb)
-        self.batch_del_btn = QPushButton("批量删除")
-        self.batch_del_btn.setEnabled(False)
-        self.batch_del_btn.setStyleSheet(
+        self.history_select_all_cb = QCheckBox("全选")
+        self.history_select_all_cb.setStyleSheet("color: #9ca3af; font-size: 13px;")
+        self.history_select_all_cb.stateChanged.connect(self._on_select_all_changed)
+        action_bar.addWidget(self.history_select_all_cb)
+        self.history_batch_del_btn = QPushButton("批量删除")
+        self.history_batch_del_btn.setEnabled(False)
+        self.history_batch_del_btn.setStyleSheet(
             "QPushButton { background: rgba(239,68,68,38); color: #f87171; border: 1px solid #ef4444; "
             "border-radius: 4px; padding: 5px 12px; font-size: 14px; font-weight: 500; }"
             "QPushButton:hover { background: rgba(239,68,68,76); }"
             "QPushButton:disabled { background: transparent; color: #555; border-color: #444; }"
         )
-        self.batch_del_btn.clicked.connect(self.batch_delete_history)
-        action_bar.addWidget(self.batch_del_btn)
+        self.history_batch_del_btn.clicked.connect(self.batch_delete_history)
+        action_bar.addWidget(self.history_batch_del_btn)
         refresh_btn = QPushButton("刷新")
         refresh_btn.clicked.connect(self.load_history)
         action_bar.addWidget(refresh_btn)
         layout.addLayout(action_bar)
 
         self.history_table = QTableWidget()
+        self.history_table.setCornerButtonEnabled(False)
         self.history_table.setColumnCount(8)  # +1 checkbox 列
         self.history_table.setHorizontalHeaderLabels([
             "", "编号", "文件名", "时间", "状态", "耗时(s)", "图片数", "操作"
@@ -111,6 +112,12 @@ class HistoryTabMixin:
         self.history_table.itemChanged.connect(self._on_table_item_changed)
         layout.addWidget(self.history_table)
 
+        # 隐藏表格左上角默认的白色全选按钮（corner button）
+        from PyQt6.QtWidgets import QAbstractButton
+        corner_btn = self.history_table.findChild(QAbstractButton)
+        if corner_btn is not None:
+            corner_btn.hide()
+
         self.tab_widget.addTab(tab, "处理记录")
 
     def load_history(self):
@@ -136,21 +143,21 @@ class HistoryTabMixin:
         count = len(self._selected_ids)
         total = len(self._all_history_ids)
         has = count > 0
-        self.batch_del_btn.setEnabled(has)
-        self.batch_del_btn.setText(f"批量删除 ({count})" if has else "批量删除")
+        self.history_batch_del_btn.setEnabled(has)
+        self.history_batch_del_btn.setText(f"批量删除 ({count})" if has else "批量删除")
 
         # 同步全选 checkbox（不触发信号）
-        self.select_all_cb.blockSignals(True)
+        self.history_select_all_cb.blockSignals(True)
         if total == 0:
-            self.select_all_cb.setChecked(False)
+            self.history_select_all_cb.setChecked(False)
         elif count == total:
-            self.select_all_cb.setChecked(True)
+            self.history_select_all_cb.setChecked(True)
         elif count > 0:
-            self.select_all_cb.setTristate(True)
-            self.select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
+            self.history_select_all_cb.setTristate(True)
+            self.history_select_all_cb.setCheckState(Qt.CheckState.PartiallyChecked)
         else:
-            self.select_all_cb.setChecked(False)
-        self.select_all_cb.blockSignals(False)
+            self.history_select_all_cb.setChecked(False)
+        self.history_select_all_cb.blockSignals(False)
 
     def _on_select_all_changed(self, state: int):
         """全选 checkbox 变化：同步所有行 checkbox + 更新内部集合"""
@@ -266,9 +273,9 @@ class HistoryTabMixin:
             traceback.print_exc()
 
         # 重置全选状态并刷新按钮
-        self.select_all_cb.blockSignals(True)
-        self.select_all_cb.setChecked(False)
-        self.select_all_cb.blockSignals(False)
+        self.history_select_all_cb.blockSignals(True)
+        self.history_select_all_cb.setChecked(False)
+        self.history_select_all_cb.blockSignals(False)
         self._refresh_batch_del_state()
 
     def delete_history(self, history_id: str):

@@ -50,22 +50,23 @@ class ReportsTabMixin:
         self.report_select_all_cb.setStyleSheet("color: #9ca3af; font-size: 13px;")
         self.report_select_all_cb.stateChanged.connect(self._on_report_select_all_changed)
         action_bar.addWidget(self.report_select_all_cb)
-        self.batch_del_btn = QPushButton("批量删除")
-        self.batch_del_btn.setEnabled(False)
-        self.batch_del_btn.setStyleSheet(
+        self.report_batch_del_btn = QPushButton("批量删除")
+        self.report_batch_del_btn.setEnabled(False)
+        self.report_batch_del_btn.setStyleSheet(
             "QPushButton { background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid #ef4444; "
             "border-radius: 4px; padding: 5px 12px; font-size: 14px; font-weight: 500; }"
             "QPushButton:hover { background: rgba(239,68,68,0.3); }"
             "QPushButton:disabled { background: transparent; color: #555; border-color: #444; }"
         )
-        self.batch_del_btn.clicked.connect(self.batch_delete_reports)
-        action_bar.addWidget(self.batch_del_btn)
+        self.report_batch_del_btn.clicked.connect(self.batch_delete_reports)
+        action_bar.addWidget(self.report_batch_del_btn)
         refresh_btn = QPushButton("刷新")
         refresh_btn.clicked.connect(self.load_reports)
         action_bar.addWidget(refresh_btn)
         layout.addLayout(action_bar)
 
         self.reports_table = QTableWidget()
+        self.reports_table.setCornerButtonEnabled(False)
         self.reports_table.setColumnCount(6)  # +1 checkbox 列
         self.reports_table.setHorizontalHeaderLabels([
             "", "报告ID", "创建时间", "包含Markdown", "大小", "操作"
@@ -86,6 +87,12 @@ class ReportsTabMixin:
         # 用 itemChanged 处理 checkbox 列变化（不依赖 selectionModel）
         self.reports_table.itemChanged.connect(self._on_report_item_changed)
         layout.addWidget(self.reports_table)
+
+        # 隐藏表格左上角默认的白色全选按钮（corner button）
+        from PyQt6.QtWidgets import QAbstractButton
+        corner_btn = self.reports_table.findChild(QAbstractButton)
+        if corner_btn is not None:
+            corner_btn.hide()
 
         self.tab_widget.addTab(tab, "报告中心")
 
@@ -258,8 +265,8 @@ class ReportsTabMixin:
         count = len(self._selected_report_ids)
         total = len(self._all_report_ids)
         has = count > 0
-        self.batch_del_btn.setEnabled(has)
-        self.batch_del_btn.setText(f"批量删除 ({count})" if has else "批量删除")
+        self.report_batch_del_btn.setEnabled(has)
+        self.report_batch_del_btn.setText(f"批量删除 ({count})" if has else "批量删除")
 
         self.report_select_all_cb.blockSignals(True)
         if total == 0:
