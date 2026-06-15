@@ -26,14 +26,18 @@ class _SelfPreservingThread(QThread):
         thread_name = name or f"Worker-{_SelfPreservingThread._counter}"
         self.setObjectName(thread_name)
         _SelfPreservingThread._active_instances.add(self)
+        # 用 super() 绕过子类 signal name shadow，连接到 QThread.finished
+        # 确保 self 只有在 C++ QThread 完全终止后才从保护集合中移除
+        # 避免 GC 在 C++ 清理中回收对象导致崩溃
+        super(_SelfPreservingThread, self).finished.connect(
+            lambda: _SelfPreservingThread._active_instances.discard(self)
+        )
 
     def run(self):
         try:
             self._do_run()
         except Exception:
             _traceback.print_exc()
-        finally:
-            _SelfPreservingThread._active_instances.discard(self)
 
     def _do_run(self):
         raise NotImplementedError
