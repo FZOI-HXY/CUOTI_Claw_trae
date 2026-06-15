@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QFileDialog, QMessageBox, QCheckBox,
 )
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 
 from apps.desktop.workers.api_task import ApiTask
@@ -316,13 +316,25 @@ class ReportsTabMixin:
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        for rid in report_ids:
+        total = len(report_ids)
+        self.show_toast(f"正在删除 {total} 个报告...")
+
+        # 串联删除：一次删除一个，全部完成后刷新列表
+        # 避免多个 worker 并发完成时线程清理竞态导致崩溃
+        remaining = list(report_ids)
+
+        def _delete_next():
+            if not remaining:
+                self.show_toast(f"已删除 {total} 个报告")
+                self.load_reports()
+                return
+            rid = remaining.pop(0)
             worker = ApiTask(self.api_base, "DELETE", f"/api/report/{rid}")
-            worker.error.connect(
-                lambda e, r=rid: self.show_toast(f"删除报告 {r} 失败: {e}")
-            )
+            worker.finished.connect(lambda d: _delete_next())
+            worker.error.connect(lambda e: (
+                self.show_toast(f"删除报告 {rid} 失败: {e}"),
+                _delete_next(),
+            ))
             worker.start()
 
-        self.show_toast(f"正在删除 {len(report_ids)} 个报告...")
-        # 延迟刷新列表
-        QTimer.singleShot(1000, self.load_reports)
+        _delete_next()
