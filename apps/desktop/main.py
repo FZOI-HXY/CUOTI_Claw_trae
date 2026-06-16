@@ -143,6 +143,13 @@ class StandaloneApp(
 
 
 def main():
+    # PyInstaller --noconsole 模式下 sys.stdout/stderr 为 None，重定向到空设备
+    import os as _os
+    if sys.stdout is None:
+        sys.stdout = open(_os.devnull, 'w')
+    if sys.stderr is None:
+        sys.stderr = open(_os.devnull, 'w')
+
     # SIGSEGV handler for C-level crash stack traces
     import faulthandler, signal
     faulthandler.enable()
