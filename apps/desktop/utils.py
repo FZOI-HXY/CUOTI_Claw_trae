@@ -16,6 +16,15 @@ def render_markdown_html(md: str, report_dir: str = "", api_base: str = "") -> s
         report_dir: 报告目录的绝对路径（用于将相对图片路径转为 file:// URL）
         api_base: API 基础地址（备用方案，通过 API 获取图片）
     """
+    # 输入大小保护：拒绝超长文本，防止正则回溯爆炸
+    MAX_MD_LENGTH = 5 * 1024 * 1024  # 5MB
+    if len(md) > MAX_MD_LENGTH:
+        return (
+            "<html><body><p style='color:#f87171;'>"
+            f"Markdown 文本过长 ({len(md) / 1024 / 1024:.1f}MB)，"
+            "不进行渲染以避免性能问题。</p></body></html>"
+        )
+
     css = """
     <style>
     body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; color: #e8ecf1;

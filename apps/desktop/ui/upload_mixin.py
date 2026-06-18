@@ -565,6 +565,15 @@ class UploadTabMixin:
                     "error": item.get("error", "未知错误"),
                 })
 
+        # ---- 清理大型数据以释放内存 ----
+        for item in self.file_queue:
+            result = item.get("result")
+            if isinstance(result, dict):
+                # 保留元数据，移除非必要的大字段（base64图片、原始markdown）
+                result.pop("images", None)          # {filename: base64} 字典
+                result.pop("layout_image_base64", None)  # 版面分析图 base64
+                result.pop("markdown_text", None)   # 完整 markdown 文本
+
         self._set_step_complete("report")
         self.processing = False
         self.progress_text.setText("处理完成")

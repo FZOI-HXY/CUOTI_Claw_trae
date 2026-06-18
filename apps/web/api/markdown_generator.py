@@ -396,6 +396,12 @@ class MarkdownGenerator:
                 )
                 return None
             try:
+                import warnings
+                warnings.warn(
+                    "同步 httpx.get() 会阻塞事件循环，"
+                    "请迁移到 _resolve_image_data_async()",
+                    DeprecationWarning, stacklevel=2,
+                )
                 headers = {
                     "Cache-Control": "no-cache, no-store, must-revalidate",
                     "Pragma": "no-cache",

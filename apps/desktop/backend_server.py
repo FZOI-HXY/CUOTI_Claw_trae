@@ -101,7 +101,7 @@ def _ensure_env_file(data_dir: str):
         f.write("# Claw 错题管理系统 配置文件\n")
         f.write("# 首次使用请在应用中配置 API Token（系统配置 → API Token）\n")
         f.write("# 从 https://aistudio.baidu.com/paddleocr/task 获取你的 API Token\n")
-        f.write('PADDLEOCR_API_KEY=your-paddleocr-api-token-here\n')
+        f.write('PADDLEOCR_API_KEY=\n')
         f.write('PADDLEOCR_MODEL=PP-StructureV3\n')
         f.write('PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs\n')
 
@@ -110,10 +110,11 @@ def _ensure_env_file(data_dir: str):
 
 _server: "uvicorn.Server | None" = None
 _server_thread: "threading.Thread | None" = None
+_server_lock = threading.Lock()  # 防止多线程竞态同时启动多个服务
 
 
 def start_server(host: str = "127.0.0.1", port: int = 8500) -> bool:
-    """启动内嵌后端服务器
+    """启动内嵌后端服务器（线程安全）
 
     Args:
         host: 监听地址（默认 127.0.0.1，仅本机访问）
@@ -124,39 +125,44 @@ def start_server(host: str = "127.0.0.1", port: int = 8500) -> bool:
     """
     global _server, _server_thread
 
-    if _server_thread and _server_thread.is_alive():
-        return True  # 已经在运行
+    # 快速路径：无锁检查（避免每次调用都竞争锁）
+    if _server_thread is not None and _server_thread.is_alive():
+        return True
 
-    # 1. 设置环境
-    data_dir = _get_data_dir()
-    _setup_environment(data_dir)
-    _ensure_env_file(data_dir)
+    with _server_lock:
+        # 二次检查：持有锁后再次确认（double-checked locking）
+        if _server_thread is not None and _server_thread.is_alive():
+            return True
 
-    # 2. PyInstaller --windowed 模式下 sys.stdout/stderr 为 None，
-    #    uvicorn 日志初始化会调用 .isatty()，导致 AttributeError。
-    #    此处将 None 重定向到日志文件以兼容。
-    if sys.stdout is None:
-        sys.stdout = open(os.path.join(data_dir, "server_stdout.log"), "w")
-    if sys.stderr is None:
-        sys.stderr = open(os.path.join(data_dir, "server_stderr.log"), "w")
+        # 1. 设置环境
+        data_dir = _get_data_dir()
+        _setup_environment(data_dir)
+        _ensure_env_file(data_dir)
 
-    # 3. 导入 FastAPI 应用（此时 Settings 会读取正确的 .env 路径）
-    from apps.web.api.main import app  # noqa: E402 — 须在 _setup_environment 之后
+        # 2. PyInstaller --windowed 模式下 sys.stdout/stderr 为 None，
+        #    uvicorn 日志初始化会调用 .isatty()，导致 AttributeError。
+        #    此处将 None 重定向到日志文件以兼容。
+        if sys.stdout is None:
+            sys.stdout = open(os.path.join(data_dir, "server_stdout.log"), "w")
+        if sys.stderr is None:
+            sys.stderr = open(os.path.join(data_dir, "server_stderr.log"), "w")
 
-    # 4. 创建并启动服务器
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=port,
-        log_level="warning",
-        access_log=False,
-    )
-    _server = uvicorn.Server(config)
-    assert _server is not None
-    _server_thread = threading.Thread(target=_server.run, daemon=True)
-    _server_thread.start()
+        # 3. 导入 FastAPI 应用（此时 Settings 会读取正确的 .env 路径）
+        from apps.web.api.main import app  # noqa: E402 — 须在 _setup_environment 之后
 
-    # 5. 等待就绪
+        # 4. 创建并启动服务器
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level="warning",
+            access_log=False,
+        )
+        _server = uvicorn.Server(config)
+        _server_thread = threading.Thread(target=_server.run, daemon=True)
+        _server_thread.start()
+
+    # 5. 等待就绪（在锁外执行，避免阻塞其他线程）
     health_url = f"http://{host}:{port}/api/health"
     return _wait_for_server(health_url, timeout=10)
 

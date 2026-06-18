@@ -328,7 +328,7 @@ def generate_icon():
         return False
 
 
-def get_pyinstaller_args(windowed: bool = False) -> list[str]:
+def get_pyinstaller_args(windowed: bool = False, noupx: bool = False) -> list[str]:
     """
     构建 PyInstaller 命令行参数
 
@@ -401,9 +401,15 @@ def get_pyinstaller_args(windowed: bool = False) -> list[str]:
         args.extend(["--exclude-module", mod])
 
     # === UPX 压缩 ===
-    upx_path = find_upx()
-    if upx_path:
-        args.extend(["--upx-dir", upx_path])
+    if noupx:
+        args.append("--noupx")
+    else:
+        upx_path = find_upx()
+        if upx_path:
+            args.extend(["--upx-dir", upx_path])
+            # UPX 5.x 无法压缩部分 .pyd 原生模块（NotCompressibleException），
+            # 跳过所有 .pyd 压缩避免构建失败（.pyd 本身很小，压缩收益可忽略）
+            args.append("--upx-exclude=*.pyd")
 
     # === 优化 ===
     args.append("--clean")         # 清理 PyInstaller 缓存
@@ -526,6 +532,8 @@ def main():
                         help="打包前清理旧构建产物")
     parser.add_argument("--no-icon", action="store_true",  # type: ignore[reportUnusedCallResult]
                         help="不生成图标")
+    parser.add_argument("--noupx", action="store_true",  # type: ignore[reportUnusedCallResult]
+                        help="禁用 UPX 压缩（避免兼容性问题）")
     args: argparse.Namespace = parser.parse_args()
 
     start_time: float = time.time()
@@ -560,7 +568,7 @@ def main():
 
     # 4. 构建参数
     log("--- 打包配置 ---")
-    build_args: list[str] = get_pyinstaller_args(windowed=args.windowed)  # type: ignore[reportAny]
+    build_args: list[str] = get_pyinstaller_args(windowed=args.windowed, noupx=args.noupx)  # type: ignore[reportAny]
 
     # 打印参数摘要
     mode = "windowed (无控制台)" if args.windowed else "console (调试)"  # type: ignore[reportAny]

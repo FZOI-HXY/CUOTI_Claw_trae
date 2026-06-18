@@ -27,6 +27,7 @@ import uvicorn
 
 from apps.web.api.config import settings, ENV_FILE_PATH
 from apps.web.api.logger import setup_logger
+from apps.web.api.models.schemas import ConfigUpdateRequest
 
 # ---------------------------------------------------------------------------
 # 条件导入 PaddleOCRService（方案 3：httpx 优先 + 自动降级）
@@ -184,17 +185,32 @@ async def get_config():
 
 
 @app.post("/api/config")
-async def update_config(config_data: dict):
-    """更新配置并持久化到 .env 文件"""
+async def update_config(config: ConfigUpdateRequest):
+    """更新配置并持久化到 .env 文件
+    使用 Pydantic 模型校验输入，仅允许白名单属性通过 setattr 写入。
+    """
+    # 安全白名单：仅允许这些字段通过 setattr 写入 Settings 对象
+    ALLOWED_SETATTR_KEYS = frozenset({
+        "paddleocr_api_url", "paddleocr_api_key", "paddleocr_model",
+        "host", "port", "debug",
+        "upload_dir", "output_dir", "log_dir",
+        "max_upload_size_mb", "log_level",
+    })
+
     try:
+        config_data = config.model_dump(exclude_unset=True)
         updated = []
         for key, value in config_data.items():
-            if hasattr(settings, key):
-                if key == "paddleocr_api_key" and not value:
-                    continue
-                setattr(settings, key, value)
-                updated.append(key)
-                logger.info(f"配置更新: {key} = {'***' if 'key' in key else value}")
+            if key not in ALLOWED_SETATTR_KEYS:
+                logger.warning(f"拒绝写入非白名单属性: {key}")
+                continue
+            if not hasattr(settings, key):
+                continue
+            if key == "paddleocr_api_key" and not value:
+                continue
+            setattr(settings, key, value)
+            updated.append(key)
+            logger.info(f"配置更新: {key} = {'***' if 'key' in key else value}")
 
         # 将更新持久化写入 .env 文件
         save_env_file(config_data, ENV_FILE_PATH)
@@ -460,7 +476,12 @@ async def poll_task_result(task_id: str):
     no_progress_count = task_info.get("_no_progress_count", 0)
 
     try:
-        poll_status = await paddle_service.poll_once(task_id, task_info["filename"])
+        # 总超时保护：poll_once 内部最坏情况（查询25s+下载JSON 55s+下载MD 55s=135s），
+        # 设置 90 秒硬上限，防止前端 30s 超时后后端仍长时间占用 worker
+        poll_status = await asyncio.wait_for(
+            paddle_service.poll_once(task_id, task_info["filename"]),
+            timeout=90.0,
+        )
         status = poll_status.get("status")
 
         if status == "done":
@@ -507,10 +528,25 @@ async def poll_task_result(task_id: str):
                 "progress": {"state": status or "unknown"},
             }
 
+    except asyncio.TimeoutError:
+        logger.warning(f"轮询总超时(90s): task_id={task_id}, 返回 processing 状态")
+        return {
+            "task_id": task_id,
+            "file_id": task_info["file_id"],
+            "filename": task_info["filename"],
+            "status": "processing",
+            "result": None,
+            "completed": False,
+            "progress": {"state": "timeout", "message": "轮询超时，将在下次重试"},
+        }
     except Exception as e:
         exc_name = type(e).__name__
         task_info["status"] = "error"
         task_info["error"] = f"[{exc_name}] {e}"
+        # 清理大字段防止内存泄漏（done 路径也会清理，此处为异常路径兜底）
+        task_info.pop("image_data", None)
+        task_info.pop("_last_extracted_pages", None)
+        task_info.pop("_no_progress_count", None)
         logger.error(f"轮询任务异常: task_id={task_id}, [{exc_name}] {e}")
         return {
             "task_id": task_id,
@@ -550,7 +586,9 @@ async def _handle_task_done(task_id: str, task_info: dict, poll_status: dict):
 
     layout_items = extracted.get("layout_items", [])
     if layout_items:
-        markdown_generator.save_layout_report_standalone(
+        # 同步文件写入 → asyncio.to_thread 避免阻塞事件循环
+        await asyncio.to_thread(
+            markdown_generator.save_layout_report_standalone,
             report_dir=report_dir,
             original_filename=task_info["filename"],
             layout_items=layout_items,
@@ -560,8 +598,11 @@ async def _handle_task_done(task_id: str, task_info: dict, poll_status: dict):
 
     if json_text:
         json_dump_path = Path(report_dir) / "downloaded_result.json"
-        with open(json_dump_path, "w", encoding="utf-8") as f:
-            f.write(json_text)
+        # 同步文件写入 → asyncio.to_thread
+        def _write_json_dump(path: Path, text: str):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        await asyncio.to_thread(_write_json_dump, json_dump_path, json_text)
         logger.info(f"原始下载JSON已保存: {json_dump_path}")
 
     result_data = {
@@ -675,7 +716,11 @@ async def process_image(file_id: str):
         with open(file_path, "rb") as f:
             image_data = f.read()
 
-        result = await paddle_service.submit_and_poll(image_data, file_path.name)
+        # 总超时保护：submit_and_poll 内循环最多 600s，加 60s 余量
+        result = await asyncio.wait_for(
+            paddle_service.submit_and_poll(image_data, file_path.name),
+            timeout=660.0,
+        )
 
         if not result["success"]:
             raise Exception(result.get("error", "处理失败"))
@@ -693,7 +738,8 @@ async def process_image(file_id: str):
 
         layout_items_sync = result.get("layout_items", [])
         if layout_items_sync:
-            markdown_generator.save_layout_report_standalone(
+            await asyncio.to_thread(
+                markdown_generator.save_layout_report_standalone,
                 report_dir=report_dir,
                 original_filename=file_path.name,
                 layout_items=layout_items_sync,

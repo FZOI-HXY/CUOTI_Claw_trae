@@ -8,9 +8,18 @@ API 异步调用工作线程
 import asyncio
 from pathlib import Path
 from typing import List, Dict
+from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QThread, pyqtSignal
-import httpx
+
+# 条件导入 httpx：PyInstaller frozen 模式下可能缺少依赖
+try:
+    import httpx
+    _HAS_HTTPX = True
+except ImportError:
+    import urllib.request as _urllib_request
+    import urllib.error as _urllib_error
+    _HAS_HTTPX = False
 
 import traceback as _traceback
 
@@ -52,6 +61,67 @@ class _SelfPreservingThread(QThread):
                 t.wait(timeout_ms)
 
 
+# ---------------------------------------------------------------------------
+# HTTP 请求辅助函数：优先 httpx，降级到 urllib (thread-pool)
+# ---------------------------------------------------------------------------
+
+_executor = ThreadPoolExecutor(max_workers=4)
+
+def _http_request_sync(method: str, url: str, json_data=None, files_data=None,
+                       raw_response: bool = False, timeout: float = 600.0):
+    """同步 HTTP 请求（urllib 降级路径），在 thread-pool 中执行"""
+    data_bytes = None
+    headers = {}
+    if json_data is not None:
+        import json as _json_mod
+        data_bytes = _json_mod.dumps(json_data).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if files_data and method in ("POST", "PUT"):
+        # multipart fallback: 仅简单字段（不处理文件二进制流，降级路径下上传不可用）
+        raise RuntimeError("降级模式下不支持文件上传，请安装 httpx")
+
+    req = _urllib_request.Request(url, data=data_bytes, headers=headers, method=method)
+    with _urllib_request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read()
+        if resp.status >= 400:
+            raise _urllib_error.HTTPError(url, resp.status, "", resp.headers, None)
+        if raw_response:
+            return body
+        import json as _json_mod
+        return _json_mod.loads(body.decode("utf-8"))
+
+
+async def _http_request(method: str, url: str, json_data=None, files_data=None,
+                        raw_response: bool = False, timeout: float = 600.0):
+    """统一的异步 HTTP 请求入口：httpx 优先，否则线程池 + urllib"""
+    if _HAS_HTTPX:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            if method == "GET":
+                resp = await client.get(url)
+            elif method == "POST":
+                if files_data:
+                    resp = await client.post(url, files=files_data)
+                elif json_data is not None:
+                    resp = await client.post(url, json=json_data)
+                else:
+                    resp = await client.post(url)
+            elif method == "DELETE":
+                resp = await client.delete(url)
+            else:
+                raise ValueError(f"不支持的方法: {method}")
+            resp.raise_for_status()
+            if raw_response:
+                return resp.content
+            return resp.json()
+    else:
+        # 降级路径：在线程池中执行同步 urllib
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _executor,
+            lambda: _http_request_sync(method, url, json_data, files_data, raw_response, timeout)
+        )
+
+
 class ApiTask(_SelfPreservingThread):
     """通用 API 异步调用线程"""
     finished = pyqtSignal(object)  # response data
@@ -71,26 +141,17 @@ class ApiTask(_SelfPreservingThread):
     def _do_run(self):
         loop = None
         try:
+            url = f"{self.api_base}{self.endpoint}"
+
             async def _do():
-                async with httpx.AsyncClient(timeout=600.0) as client:
-                    url = f"{self.api_base}{self.endpoint}"
-                    if self.method == "GET":
-                        resp = await client.get(url)
-                    elif self.method == "POST":
-                        if self.files_data:
-                            resp = await client.post(url, files=self.files_data)
-                        elif self.json_data:
-                            resp = await client.post(url, json=self.json_data)
-                        else:
-                            resp = await client.post(url)
-                    elif self.method == "DELETE":
-                        resp = await client.delete(url)
-                    else:
-                        raise ValueError(f"不支持的方法: {self.method}")
-                    resp.raise_for_status()
-                    if self.raw_response:
-                        return resp.content
-                    return resp.json()
+                return await _http_request(
+                    self.method, url,
+                    json_data=self.json_data,
+                    files_data=self.files_data,
+                    raw_response=self.raw_response,
+                    timeout=600.0,
+                )
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(_do())
@@ -118,14 +179,22 @@ class UploadWorker(_SelfPreservingThread):
         loop = None
         try:
             async def _do():
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    with open(self.file_path, "rb") as f:
-                        files = {"file": (Path(self.file_path).name, f)}
-                        resp = await client.post(f"{self.api_base}/api/upload", files=files)
-                        resp.raise_for_status()
-                        data = resp.json()
-                        data["_index"] = self.index
-                        return data
+                if _HAS_HTTPX:
+                    async with httpx.AsyncClient(timeout=120.0) as client:
+                        with open(self.file_path, "rb") as f:
+                            files = {"file": (Path(self.file_path).name, f)}
+                            resp = await client.post(
+                                f"{self.api_base}/api/upload", files=files
+                            )
+                            resp.raise_for_status()
+                            data = resp.json()
+                            data["_index"] = self.index
+                            return data
+                else:
+                    raise RuntimeError(
+                        "文件上传需要 httpx 库（当前为 urllib 降级模式），"
+                        "请安装: pip install httpx"
+                    )
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(_do())
@@ -152,15 +221,15 @@ class SubmitWorker(_SelfPreservingThread):
         loop = None
         try:
             async def _do():
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    resp = await client.post(f"{self.api_base}/api/submit/{self.file_id}")
-                    resp.raise_for_status()
-                    data = resp.json()
-                    data["_index"] = self.index
-                    return data
+                return await _http_request(
+                    "POST", f"{self.api_base}/api/submit/{self.file_id}",
+                    timeout=60.0,
+                )
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(_do())
+            assert isinstance(result, dict), f"SubmitWorker 期望 dict，收到 {type(result)}"
+            result["_index"] = self.index
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(self.index, str(e))
@@ -183,20 +252,22 @@ class PollWorker(_SelfPreservingThread):
     def _do_run(self):
         loop = None
         try:
-            async def _poll_one(client, task_id, idx):
+            async def _poll_one(task_id, idx):
                 try:
-                    resp = await client.post(f"{self.api_base}/api/poll/{task_id}")
-                    resp.raise_for_status()
-                    data = resp.json()
-                    return {"index": idx, "data": data, "task_id": task_id}
+                    # timeout=95s：比后端 wait_for(90s) 多 5s 余量，
+                    # 避免任务首次 done 下载 JSON+MD 时前端先超时断连
+                    result = await _http_request(
+                        "POST", f"{self.api_base}/api/poll/{task_id}",
+                        timeout=95.0,
+                    )
+                    return {"index": idx, "data": result, "task_id": task_id}
                 except Exception as e:
                     return {"index": idx, "error": str(e), "task_id": task_id}
 
             async def _do():
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    coros = [_poll_one(client, t["task_id"], t["index"])
-                             for t in self.tasks]
-                    return await asyncio.gather(*coros)
+                coros = [_poll_one(t["task_id"], t["index"])
+                         for t in self.tasks]
+                return await asyncio.gather(*coros)
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
