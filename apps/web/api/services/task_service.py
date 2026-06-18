@@ -7,6 +7,7 @@
 """
 import uuid
 import sqlite3
+import atexit
 from typing import Dict, List, Optional
 from datetime import datetime
 from threading import Lock
@@ -52,6 +53,21 @@ class TaskService:
         self._max_history = 200
         self._db: Optional[sqlite3.Connection] = None
         self._init_history_from_db()
+
+    # ---- 资源管理 ----
+
+    def close(self):
+        """显式关闭 SQLite 连接，释放文件句柄"""
+        with self._lock:
+            if self._db is not None:
+                try:
+                    self._db.close()
+                    # atexit 时日志流可能已关闭，用 print 替代 logger 避免报错
+                    print("[TaskService] SQLite 连接已关闭", flush=True)
+                except Exception as e:
+                    print(f"[TaskService] 关闭 SQLite 连接时出错: {e}", flush=True)
+                finally:
+                    self._db = None
 
     # ---- 任务存储 ----
 
@@ -183,3 +199,7 @@ class TaskService:
 
 # 全局单例
 task_service = TaskService()
+
+# 注册进程退出时的清理回调
+atexit.register(task_service.close)
+

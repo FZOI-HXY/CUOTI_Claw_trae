@@ -75,7 +75,7 @@ class PaddleOCRService:
       OCR_MODELS:    PP-OCRv6, PP-OCRv5, PP-OCRv4（纯文字识别）
     """
 
-    DEFAULT_TOKEN = "your-paddleocr-api-token-here"
+    DEFAULT_TOKEN = ""  # 不再提供默认值；须由用户通过配置或环境变量设置
 
     def __init__(self, api_url: str = "", api_key: str = "", model: str = "PaddleOCR-VL-1.6"):
         self.job_url = api_url.rstrip("/")
@@ -84,8 +84,8 @@ class PaddleOCRService:
 
     @property
     def is_configured(self) -> bool:
-        """检查 API Token 是否已配置（默认值=未配置）"""
-        return bool(self.token) and self.token != self.DEFAULT_TOKEN
+        """检查 API Token 是否已配置"""
+        return bool(self.token and self.token.strip())
 
     def _build_headers(self, content_type: Optional[str] = None) -> Dict[str, str]:
         headers = {"Authorization": f"bearer {self.token}"}

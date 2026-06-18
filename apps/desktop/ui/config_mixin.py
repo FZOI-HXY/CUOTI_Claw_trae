@@ -361,7 +361,7 @@ class ConfigTabMixin:
         """保存 API 配置（含 Token）"""
         token_input = self.cfg_api_token.text().strip()
         # 忽略占位符/掩码值，避免覆盖真实 Token
-        if token_input in ("", "********", "your-paddleocr-api-token-here"):
+        if token_input in ("", "********"):
             token_input = ""  # 空值会被后端跳过，不覆盖现有配置
         data = {
             "paddleocr_api_url": self.cfg_api_url.text().strip(),

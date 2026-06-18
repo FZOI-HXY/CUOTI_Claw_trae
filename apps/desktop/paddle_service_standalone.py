@@ -70,7 +70,7 @@ DOWNLOAD_READ_TIMEOUT = 45.0
 class PaddleOCRService:
     """PaddleOCR API 服务封装 — 标准库版"""
 
-    DEFAULT_TOKEN = "your-paddleocr-api-token-here"
+    DEFAULT_TOKEN = ""  # 不再提供默认值；须由用户通过配置或环境变量设置
 
     def __init__(self, api_url: str = "", api_key: str = "", model: str = "PaddleOCR-VL-1.6"):
         self.job_url = api_url.rstrip("/")
@@ -80,7 +80,7 @@ class PaddleOCRService:
     @property
     def is_configured(self) -> bool:
         """检查 API Token 是否已配置"""
-        return bool(self.token) and self.token != self.DEFAULT_TOKEN
+        return bool(self.token and self.token.strip())
 
     # ------------------------------------------------------------------
     # 内部工具
