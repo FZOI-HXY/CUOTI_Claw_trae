@@ -9,6 +9,7 @@
 import os
 import sys
 import shutil
+import socket
 import threading
 import time
 import urllib.request
@@ -17,7 +18,18 @@ import urllib.error
 import uvicorn
 
 
-# ---- 路径设置 ----
+# ---- PyInstaller 兼容性 ---- 
+
+# 设置 socket 默认超时，防止 DNS 解析在 PyInstaller 中无限挂起
+socket.setdefaulttimeout(10)
+
+# Windows 下显式设置 asyncio 事件循环策略（避免 ProactorEventLoop 兼容问题）
+if sys.platform == "win32":
+    try:
+        import asyncio as _asyncio
+        _asyncio.set_event_loop_policy(_asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
 
 def _get_project_root() -> str:
     """获取项目根目录（支持 PyInstaller 打包后的路径）"""
@@ -55,6 +67,15 @@ def _setup_environment(data_dir: str):
     # 数据根目录（config.py 中的 _resolve_path 会用到）
     if not os.environ.get("CLAW_DATA_DIR"):
         os.environ["CLAW_DATA_DIR"] = data_dir
+
+    # PyInstaller 打包后 certifi 的 CA bundle 路径需要显式设置，
+    # 否则 httpx 发起 HTTPS 请求时因找不到证书而挂起。
+    if getattr(sys, 'frozen', False) and not os.environ.get("SSL_CERT_FILE"):
+        try:
+            import certifi
+            os.environ["SSL_CERT_FILE"] = certifi.where()
+        except Exception:
+            pass  # certifi 模块可能不可用，让 httpx 自行处理（通常会失败）
 
     # 将项目根目录加入 sys.path，确保 backend 模块可被 import
     project_root = _get_project_root()

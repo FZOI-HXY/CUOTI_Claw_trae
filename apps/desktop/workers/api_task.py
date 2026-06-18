@@ -69,6 +69,7 @@ class ApiTask(_SelfPreservingThread):
         self.raw_response = raw_response
 
     def _do_run(self):
+        loop = None
         try:
             async def _do():
                 async with httpx.AsyncClient(timeout=600.0) as client:
@@ -93,10 +94,12 @@ class ApiTask(_SelfPreservingThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(_do())
-            loop.close()
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            if loop is not None and not loop.is_closed():
+                loop.close()
 
 
 class UploadWorker(_SelfPreservingThread):
@@ -112,6 +115,7 @@ class UploadWorker(_SelfPreservingThread):
         self.index = index
 
     def _do_run(self):
+        loop = None
         try:
             async def _do():
                 async with httpx.AsyncClient(timeout=120.0) as client:
@@ -125,10 +129,12 @@ class UploadWorker(_SelfPreservingThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(_do())
-            loop.close()
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(self.index, str(e))
+        finally:
+            if loop is not None and not loop.is_closed():
+                loop.close()
 
 
 class SubmitWorker(_SelfPreservingThread):
@@ -143,6 +149,7 @@ class SubmitWorker(_SelfPreservingThread):
         self.index = index
 
     def _do_run(self):
+        loop = None
         try:
             async def _do():
                 async with httpx.AsyncClient(timeout=60.0) as client:
@@ -154,10 +161,12 @@ class SubmitWorker(_SelfPreservingThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(_do())
-            loop.close()
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(self.index, str(e))
+        finally:
+            if loop is not None and not loop.is_closed():
+                loop.close()
 
 
 class PollWorker(_SelfPreservingThread):
@@ -172,6 +181,7 @@ class PollWorker(_SelfPreservingThread):
         self.index_map = index_map
 
     def _do_run(self):
+        loop = None
         try:
             async def _poll_one(client, task_id, idx):
                 try:
@@ -191,7 +201,9 @@ class PollWorker(_SelfPreservingThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = loop.run_until_complete(_do())
-            loop.close()
             self.finished.emit(list(result))
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            if loop is not None and not loop.is_closed():
+                loop.close()

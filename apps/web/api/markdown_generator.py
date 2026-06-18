@@ -6,13 +6,33 @@
 import base64
 import re
 import json
-import httpx
+import asyncio
+import sys as _sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from apps.web.api.logger import setup_logger
 
+# ---------------------------------------------------------------------------
+# 条件导入 httpx（与 main.py 中 paddle_service 保持一致）
+#   - 非 frozen 模式：直接使用 httpx
+#   - frozen 模式：尝试导入，失败则降级（图片 URL 下载功能降级）
+# ---------------------------------------------------------------------------
+_httpx_load_error: Optional[str] = None
+try:
+    import httpx
+except ImportError as e:
+    _httpx_load_error = str(e)
+    if getattr(_sys, 'frozen', False):
+        httpx = None  # type: ignore[assignment]
+    else:
+        raise  # 开发模式下导入失败是真实错误，不应静默
+
 logger = setup_logger("MarkdownGenerator")
+if _httpx_load_error and getattr(_sys, 'frozen', False):
+    logger.warning(
+        f"httpx 导入失败，图片 URL 下载功能将降级：{_httpx_load_error}"
+    )
 
 
 class MarkdownGenerator:
@@ -308,28 +328,37 @@ class MarkdownGenerator:
         return safe
 
     @staticmethod
-    def _resolve_image_data(image_value: str) -> Optional[bytes]:
+    async def _resolve_image_data_async(image_value: str) -> Optional[bytes]:
         """
-        解析图片数据，支持两种格式:
-        1. HTTP URL → 下载获取二进制数据
+        异步解析图片数据，支持两种格式:
+        1. HTTP URL → 异步下载获取二进制数据（不阻塞事件循环）
         2. base64 字符串 → 解码获取二进制数据
         """
         if not image_value:
             return None
 
-        # URL 格式
+        # URL 格式 — 使用异步客户端，不阻塞事件循环
         if image_value.startswith(("http://", "https://")):
+            if httpx is None:
+                logger.warning(
+                    f"httpx 不可用，跳过 URL 图片下载: {image_value[:80]}..."
+                )
+                return None
             try:
                 headers = {
                     "Cache-Control": "no-cache, no-store, must-revalidate",
                     "Pragma": "no-cache",
                 }
-                resp = httpx.get(image_value, timeout=30.0, follow_redirects=True, headers=headers)
-                resp.raise_for_status()
-                if not resp.content:
-                    logger.warning(f"下载图片为空 (status={resp.status_code}): {image_value[:80]}...")
-                    return None
-                return resp.content
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=10.0, read=25.0, write=10.0, pool=5.0),
+                    follow_redirects=True,
+                ) as client:
+                    resp = await client.get(image_value, headers=headers)
+                    resp.raise_for_status()
+                    if not resp.content:
+                        logger.warning(f"下载图片为空 (status={resp.status_code}): {image_value[:80]}...")
+                        return None
+                    return resp.content
             except Exception as e:
                 logger.warning(f"下载图片失败 [{image_value[:80]}...]: {e}")
                 return None
@@ -350,7 +379,53 @@ class MarkdownGenerator:
             logger.warning(f"base64解码失败: {image_value[:80]}...")
             return None
 
-    def save_report(
+    @staticmethod
+    def _resolve_image_data(image_value: str) -> Optional[bytes]:
+        """
+        同步解析图片数据（仅保留用于同步调用场景，避免破坏性变更）
+        注意：在异步上下文中应使用 _resolve_image_data_async
+        """
+        if not image_value:
+            return None
+
+        # URL 格式 — 同步调用（会阻塞事件循环，异步场景请用 _resolve_image_data_async）
+        if image_value.startswith(("http://", "https://")):
+            if httpx is None:
+                logger.warning(
+                    f"httpx 不可用，跳过 URL 图片下载: {image_value[:80]}..."
+                )
+                return None
+            try:
+                headers = {
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                }
+                resp = httpx.get(image_value, timeout=30.0, follow_redirects=True, headers=headers)
+                resp.raise_for_status()
+                if not resp.content:
+                    logger.warning(f"下载图片为空 (status={resp.status_code}): {image_value[:80]}...")
+                    return None
+                return resp.content
+            except Exception as e:
+                logger.warning(f"下载图片失败 [{image_value[:80]}...]: {e}")
+                return None
+
+        # base64 格式
+        if image_value.startswith("data:"):
+            try:
+                base64_part = image_value.split(",", 1)[1]
+                return base64.b64decode(base64_part)
+            except Exception:
+                logger.warning(f"base64 data URI 解码失败: {image_value[:80]}...")
+                return None
+
+        try:
+            return base64.b64decode(image_value)
+        except Exception:
+            logger.warning(f"base64解码失败: {image_value[:80]}...")
+            return None
+
+    async def save_report(
         self,
         original_filename: str,
         markdown_text: str,
@@ -362,7 +437,9 @@ class MarkdownGenerator:
         processing_time: float = 0,
     ) -> Path:
         """
-        保存完整报告到磁盘。
+        异步保存完整报告到磁盘。
+
+        图片下载通过 httpx.AsyncClient 异步执行，不阻塞 FastAPI 事件循环。
 
         目录结构:
         output/20240608_120000/
@@ -376,7 +453,8 @@ class MarkdownGenerator:
         now = datetime.now()
         report_name = now.strftime("%Y%m%d_%H%M%S")
         report_dir = self.output_dir / report_name
-        report_dir.mkdir(parents=True, exist_ok=True)
+        # 文件 I/O 通过 asyncio.to_thread 避免阻塞事件循环
+        await asyncio.to_thread(report_dir.mkdir, parents=True, exist_ok=True)
 
         try:
             # 1. 构建并保存 Markdown 报告
@@ -390,46 +468,56 @@ class MarkdownGenerator:
                 processing_time=processing_time,
             )
             md_path = report_dir / "report.md"
-            with open(md_path, "w", encoding="utf-8") as f:
-                f.write(report_content)
+            def _write_text(p: Path, content: str):
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(content)
+            await asyncio.to_thread(_write_text, md_path, report_content)
             logger.info(f"Markdown报告已保存: {md_path}")
 
-            # 2. 保存内嵌图片到 imgs/ 子目录（支持 base64 和 URL 两种格式）
+            # 2. 保存内嵌图片到 imgs/ 子目录（异步下载 + 线程写盘）
             imgs_dir = report_dir / "imgs"
-            imgs_dir.mkdir(exist_ok=True)
+            await asyncio.to_thread(imgs_dir.mkdir, exist_ok=True)
             for img_key, img_value in images.items():
                 try:
-                    img_data = self._resolve_image_data(img_value)
+                    img_data = await self._resolve_image_data_async(img_value)
                     if img_data:
                         safe_name = self._safe_image_name(img_key)
                         img_path = imgs_dir / safe_name
-                        with open(img_path, "wb") as f:
-                            f.write(img_data)
+                        def _write_bytes(p: Path, d: bytes):
+                            with open(p, "wb") as f:
+                                f.write(d)
+                        await asyncio.to_thread(_write_bytes, img_path, img_data)
                 except Exception as e:
                     logger.warning(f"保存内嵌图片失败 [{img_key}]: {e}")
 
-            # 3. 保存版面分析可视化图
+            # 3. 保存版面分析可视化图（异步解析）
             if layout_image_base64:
                 try:
-                    layout_data = self._resolve_image_data(layout_image_base64)
+                    layout_data = await self._resolve_image_data_async(layout_image_base64)
                     if layout_data:
                         layout_path = report_dir / "layout_analysis.png"
-                        with open(layout_path, "wb") as f:
-                            f.write(layout_data)
+                        def _write_bytes(p: Path, d: bytes):
+                            with open(p, "wb") as f:
+                                f.write(d)
+                        await asyncio.to_thread(_write_bytes, layout_path, layout_data)
                 except Exception as e:
                     logger.warning(f"保存版面可视化图失败: {e}")
 
             # 4. 保存原始上传图片
             if original_image_data:
                 orig_path = report_dir / "original.png"
-                with open(orig_path, "wb") as f:
-                    f.write(original_image_data)
+                def _write_bytes(p: Path, d: bytes):
+                    with open(p, "wb") as f:
+                        f.write(d)
+                await asyncio.to_thread(_write_bytes, orig_path, original_image_data)
 
             # 5. 保存 API 原始返回
             if structure_result:
                 api_path = report_dir / "api_response.json"
-                with open(api_path, "w", encoding="utf-8") as f:
-                    json.dump(structure_result, f, ensure_ascii=False, indent=2)
+                def _write_json(p: Path, data: dict):
+                    with open(p, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                await asyncio.to_thread(_write_json, api_path, structure_result)
 
             logger.info(f"报告保存完成: {report_dir}")
             return report_dir
