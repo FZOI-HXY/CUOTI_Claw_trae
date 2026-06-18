@@ -22,6 +22,7 @@ import time
 import io
 from typing import Optional, Dict, Any
 import httpx
+from httpx import Timeout as HttpxTimeout
 from apps.web.api.logger import setup_logger
 from apps.web.api.services.paddle_parser import extract_ocr_result
 
@@ -68,10 +69,25 @@ class PaddleOCRService:
       OCR_MODELS:    PP-OCRv6, PP-OCRv5, PP-OCRv4（纯文字识别）
     """
 
+    # 默认占位 Token（未配置时使用，应提示用户配置）
+    DEFAULT_TOKEN = "your-paddleocr-api-token-here"
+
+    # HTTP 请求超时配置
+    # connect=10s: 快速失败，避免 TCP 连接长时间挂起
+    # read=30s:   文件上传允许较长的服务端处理时间
+    SUBMIT_TIMEOUT = HttpxTimeout(connect=10.0, read=30.0, write=15.0, pool=5.0)
+    POLL_TIMEOUT = HttpxTimeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
+    DOWNLOAD_TIMEOUT = HttpxTimeout(connect=10.0, read=45.0, write=10.0, pool=5.0)
+
     def __init__(self, api_url: str = "", api_key: str = "", model: str = "PaddleOCR-VL-1.6"):
         self.job_url = api_url.rstrip("/")
         self.token = api_key
         self.model = model
+
+    @property
+    def is_configured(self) -> bool:
+        """检查 API Token 是否已配置"""
+        return bool(self.token) and self.token != self.DEFAULT_TOKEN
 
     def _build_headers(self, content_type: Optional[str] = None) -> Dict[str, str]:
         headers = {"Authorization": f"bearer {self.token}"}
@@ -124,9 +140,11 @@ class PaddleOCRService:
         return result.get("errorMsg") or result.get("message") or f"未知错误 (code={code})"
 
     async def _api_get(
-        self, url: str, timeout: float = 30.0
+        self, url: str, timeout: "HttpxTimeout | None" = None
     ) -> Dict[str, Any]:
         """通用 GET 请求"""
+        if timeout is None:
+            timeout = self.POLL_TIMEOUT
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 response = await client.get(url, headers=self._build_headers())
@@ -169,6 +187,14 @@ class PaddleOCRService:
         if not image_data and not file_url:
             return {"success": False, "error": "必须提供 image_data 或 file_url", "filename": filename}
 
+        # 预检：API Token 未配置时快速失败，避免长时间等待
+        if not self.is_configured:
+            return {
+                "success": False,
+                "error": "API Token 未配置，请在系统配置中填入 PaddleOCR API Token",
+                "filename": filename,
+            }
+
         optional_payload = self._get_optional_payload()
 
         try:
@@ -186,7 +212,7 @@ class PaddleOCRService:
                 if batch_id:
                     data["batchId"] = batch_id
 
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=self.SUBMIT_TIMEOUT) as client:
                     response = await client.post(
                         self.job_url,
                         headers=self._build_headers("application/json"),
@@ -211,7 +237,7 @@ class PaddleOCRService:
 
                 files = {"file": (filename, io.BytesIO(image_data))}
 
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=self.SUBMIT_TIMEOUT) as client:
                     response = await client.post(
                         self.job_url,
                         headers=self._build_headers(),
@@ -255,7 +281,7 @@ class PaddleOCRService:
         query_url = f"{self.job_url}/{job_id}"
 
         try:
-            result = await self._api_get(query_url, timeout=30.0)
+            result = await self._api_get(query_url, timeout=self.POLL_TIMEOUT)
 
             data_field = result.get("data", {})
             state = data_field.get("state", "")
@@ -353,7 +379,7 @@ class PaddleOCRService:
 
         for attempt in range(1, POLL_MAX_RETRIES + 1):
             try:
-                result = await self._api_get(query_url, timeout=30.0)
+                result = await self._api_get(query_url, timeout=self.POLL_TIMEOUT)
                 tx_error_count = 0  # 请求成功，重置连续错误计数
 
                 data_field = result.get("data", {})
@@ -506,7 +532,7 @@ class PaddleOCRService:
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
         }
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=self.DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
             response = await client.get(json_url, headers=headers)
             response.raise_for_status()
             text = response.text
@@ -531,7 +557,7 @@ class PaddleOCRService:
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
         }
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=self.DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
             response = await client.get(markdown_url, headers=headers)
             response.raise_for_status()
             if not response.text:
@@ -552,7 +578,7 @@ class PaddleOCRService:
         batch_url = f"{self.job_url}/batch/{batch_id}"
         try:
             logger.info(f"批量查询结果: batchId={batch_id}")
-            result = await self._api_get(batch_url, timeout=30.0)
+            result = await self._api_get(batch_url, timeout=self.POLL_TIMEOUT)
             data = result.get("data", [])
             logger.info(f"批量查询完成: batchId={batch_id}, 共 {len(data)} 条")
             return {"success": True, "results": data}
