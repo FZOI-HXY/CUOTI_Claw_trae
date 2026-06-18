@@ -314,7 +314,7 @@ def generate_icon():
         return False
 
 
-def get_pyinstaller_args(windowed: bool = True) -> list[str]:
+def get_pyinstaller_args(windowed: bool = False) -> list[str]:
     """
     构建 PyInstaller 命令行参数
 
@@ -497,14 +497,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python build.py                    # 标准打包 (单文件, 无控制台)
+  python build.py                    # 标准打包 (保留控制台, 方便调试)
   python build.py --clean            # 清理后重新打包
-  python build.py --console          # 打包并保留控制台 (调试)
+  python build.py --windowed         # 打包为无控制台窗口 (发布用)
   python build.py --no-icon          # 跳过图标生成
         """
     )
-    parser.add_argument("--console", action="store_true",  # type: ignore[reportUnusedCallResult]
-                        help="保留控制台窗口 (调试用)")
+    parser.add_argument("--windowed", action="store_true",  # type: ignore[reportUnusedCallResult]
+                        help="无控制台窗口 (正式发布用)")
     parser.add_argument("--clean", action="store_true",  # type: ignore[reportUnusedCallResult]
                         help="打包前清理旧构建产物")
     parser.add_argument("--no-icon", action="store_true",  # type: ignore[reportUnusedCallResult]
@@ -543,10 +543,10 @@ def main():
 
     # 4. 构建参数
     log("--- 打包配置 ---")
-    build_args: list[str] = get_pyinstaller_args(windowed=not args.console)  # type: ignore[reportAny]
+    build_args: list[str] = get_pyinstaller_args(windowed=args.windowed)  # type: ignore[reportAny]
 
     # 打印参数摘要
-    mode = "windowed (无控制台)" if not args.console else "console (调试)"  # type: ignore[reportAny]
+    mode = "windowed (无控制台)" if args.windowed else "console (调试)"  # type: ignore[reportAny]
     log(f"模式: {mode}")
     log(f"图标: {'有' if ICON_FILE.exists() else '无'}")
     log(f"版本: {'有' if VERSION_FILE.exists() else '无'}")

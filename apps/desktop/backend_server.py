@@ -2,7 +2,9 @@
 内嵌后端服务管理 — 为 standalone 桌面应用提供自包含的 FastAPI 后端
 
 在后台线程启动 uvicorn，使 PyQt6 应用无需外部后端即可运行。
-启动时自动设置数据目录和 .env 路径，确保所有文件读写指向用户 AppData。
+启动时自动设置数据目录和 .env 路径：
+  - 打包后：所有数据与 Claw.exe 在同一目录（便携模式）
+  - 开发模式：使用 %APPDATA%/Claw/ 目录
 """
 import os
 import sys
@@ -25,9 +27,16 @@ def _get_project_root() -> str:
 
 
 def _get_data_dir() -> str:
-    """获取用户数据目录（%APPDATA%/Claw），不存在则创建"""
-    appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-    data_dir = os.path.join(appdata, "Claw")
+    """获取数据目录，不存在则创建
+
+    打包后 (frozen): Claw.exe 所在目录（便携模式，配置与程序同目录）
+    开发模式: %APPDATA%/Claw/（避免污染源码目录）
+    """
+    if getattr(sys, 'frozen', False):
+        data_dir = os.path.dirname(sys.executable)
+    else:
+        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+        data_dir = os.path.join(appdata, "Claw")
     os.makedirs(data_dir, exist_ok=True)
     return data_dir
 
@@ -36,7 +45,7 @@ def _setup_environment(data_dir: str):
     """在导入 backend 模块之前设置环境变量
 
     这些环境变量会在 Settings 初始化时被 pydantic-settings 读取，
-    覆盖默认的相对路径，指向用户 AppData 目录。
+    覆盖默认的相对路径，指向便携数据目录（exe 同级）或 AppData。
     """
     # .env 文件路径
     env_file = os.path.join(data_dir, ".env")
@@ -70,9 +79,10 @@ def _ensure_env_file(data_dir: str):
     with open(env_path, "w", encoding="utf-8") as f:
         f.write("# Claw 错题管理系统 配置文件\n")
         f.write("# 首次使用请在应用中配置 API Token（系统配置 → API Token）\n")
-        f.write('# PADDLEOCR_API_KEY="your-paddleocr-api-token-here"\n')
-        f.write('PADDLEOCR_MODEL="PP-StructureV3"\n')
-        f.write('PADDLEOCR_API_URL="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"\n')
+        f.write("# 从 https://aistudio.baidu.com/paddleocr/task 获取你的 API Token\n")
+        f.write('PADDLEOCR_API_KEY=your-paddleocr-api-token-here\n')
+        f.write('PADDLEOCR_MODEL=PP-StructureV3\n')
+        f.write('PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs\n')
 
 
 # ---- 服务器生命周期 ----
