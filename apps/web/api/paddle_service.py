@@ -22,7 +22,6 @@ import time
 import io
 from typing import Optional, Dict, Any
 import httpx
-from httpx import Timeout as HttpxTimeout
 from apps.web.api.logger import setup_logger
 from apps.web.api.services.paddle_parser import extract_ocr_result
 
@@ -31,6 +30,13 @@ logger = setup_logger("PaddleOCRService")
 # 轮询配置
 POLL_INTERVAL = 5       # 轮询间隔（秒），官方建议 5s
 POLL_MAX_RETRIES = 120  # 最大轮询次数（总共 600 秒）
+
+# 超时配置（httpx.Timeout 分离 connect/read/write/pool 超时）
+TIMEOUT_API_GET = httpx.Timeout(connect=10.0, read=25.0, write=10.0, pool=5.0)
+TIMEOUT_SUBMIT_JSON = httpx.Timeout(connect=10.0, read=25.0, write=10.0, pool=5.0)
+TIMEOUT_SUBMIT_MULTIPART = httpx.Timeout(connect=15.0, read=55.0, write=30.0, pool=5.0)
+TIMEOUT_DOWNLOAD = httpx.Timeout(connect=15.0, read=55.0, write=10.0, pool=5.0)
+TIMEOUT_POLL_LOOP = httpx.Timeout(connect=15.0, read=55.0, write=10.0, pool=10.0)
 
 # 模型分组
 VL_MODELS = {"PaddleOCR-VL-1.6", "PaddleOCR-VL-1.5", "PaddleOCR-VL"}
@@ -69,15 +75,7 @@ class PaddleOCRService:
       OCR_MODELS:    PP-OCRv6, PP-OCRv5, PP-OCRv4（纯文字识别）
     """
 
-    # 默认占位 Token（未配置时使用，应提示用户配置）
     DEFAULT_TOKEN = "your-paddleocr-api-token-here"
-
-    # HTTP 请求超时配置
-    # connect=10s: 快速失败，避免 TCP 连接长时间挂起
-    # read=30s:   文件上传允许较长的服务端处理时间
-    SUBMIT_TIMEOUT = HttpxTimeout(connect=10.0, read=30.0, write=15.0, pool=5.0)
-    POLL_TIMEOUT = HttpxTimeout(connect=10.0, read=30.0, write=10.0, pool=5.0)
-    DOWNLOAD_TIMEOUT = HttpxTimeout(connect=10.0, read=45.0, write=10.0, pool=5.0)
 
     def __init__(self, api_url: str = "", api_key: str = "", model: str = "PaddleOCR-VL-1.6"):
         self.job_url = api_url.rstrip("/")
@@ -86,7 +84,7 @@ class PaddleOCRService:
 
     @property
     def is_configured(self) -> bool:
-        """检查 API Token 是否已配置"""
+        """检查 API Token 是否已配置（默认值=未配置）"""
         return bool(self.token) and self.token != self.DEFAULT_TOKEN
 
     def _build_headers(self, content_type: Optional[str] = None) -> Dict[str, str]:
@@ -140,14 +138,13 @@ class PaddleOCRService:
         return result.get("errorMsg") or result.get("message") or f"未知错误 (code={code})"
 
     async def _api_get(
-        self, url: str, timeout: "HttpxTimeout | None" = None
+        self, url: str, timeout: httpx.Timeout = TIMEOUT_API_GET,
+        client: Optional[httpx.AsyncClient] = None,
     ) -> Dict[str, Any]:
-        """通用 GET 请求"""
-        if timeout is None:
-            timeout = self.POLL_TIMEOUT
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        """通用 GET 请求。若传入 client 则复用现有连接池。"""
+        async def _do_get(c: httpx.AsyncClient) -> Dict[str, Any]:
             try:
-                response = await client.get(url, headers=self._build_headers())
+                response = await c.get(url, headers=self._build_headers())
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPStatusError as e:
@@ -162,6 +159,12 @@ class PaddleOCRService:
                 exc_repr = repr(e) if repr(e) != f"{exc_name}()" else ""
                 logger.error(f"API调用异常 [{exc_name}] {e}{' | ' + exc_repr if exc_repr else ''}")
                 raise
+
+        if client is not None:
+            return await _do_get(client)
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                return await _do_get(c)
 
     async def submit_task(
         self,
@@ -187,11 +190,11 @@ class PaddleOCRService:
         if not image_data and not file_url:
             return {"success": False, "error": "必须提供 image_data 或 file_url", "filename": filename}
 
-        # 预检：API Token 未配置时快速失败，避免长时间等待
+        # 预检：API Token 未配置时快速失败
         if not self.is_configured:
             return {
                 "success": False,
-                "error": "API Token 未配置，请在系统配置中填入 PaddleOCR API Token",
+                "error": "API Token 未配置，请在系统设置中配置 PaddleOCR API Token",
                 "filename": filename,
             }
 
@@ -212,7 +215,7 @@ class PaddleOCRService:
                 if batch_id:
                     data["batchId"] = batch_id
 
-                async with httpx.AsyncClient(timeout=self.SUBMIT_TIMEOUT) as client:
+                async with httpx.AsyncClient(timeout=TIMEOUT_SUBMIT_JSON) as client:
                     response = await client.post(
                         self.job_url,
                         headers=self._build_headers("application/json"),
@@ -237,7 +240,7 @@ class PaddleOCRService:
 
                 files = {"file": (filename, io.BytesIO(image_data))}
 
-                async with httpx.AsyncClient(timeout=self.SUBMIT_TIMEOUT) as client:
+                async with httpx.AsyncClient(timeout=TIMEOUT_SUBMIT_MULTIPART) as client:
                     response = await client.post(
                         self.job_url,
                         headers=self._build_headers(),
@@ -281,7 +284,7 @@ class PaddleOCRService:
         query_url = f"{self.job_url}/{job_id}"
 
         try:
-            result = await self._api_get(query_url, timeout=self.POLL_TIMEOUT)
+            result = await self._api_get(query_url, timeout=TIMEOUT_API_GET)
 
             data_field = result.get("data", {})
             state = data_field.get("state", "")
@@ -368,153 +371,159 @@ class PaddleOCRService:
         供同步处理模式使用（submit_and_poll）。
 
         内置卡死检测：如果 running 状态下进度持续不变超过 STUCK_THRESHOLD 次，判定为卡死。
+
+        优化：整个轮询循环复用同一个 httpx.AsyncClient，避免每次请求重建
+        连接池、SSL 上下文和 DNS 缓存（最多可省 120 次连接建立开销）。
         """
         query_url = f"{self.job_url}/{job_id}"
         STUCK_THRESHOLD = 20           # running 进度不变超此次数 → 判定卡死
         TX_ERROR_THRESHOLD = 8          # 连续网络异常超此次数 → 判定不可达
 
-        last_extracted = -1
+        last_extracted: int = -1
         stuck_count = 0
         tx_error_count = 0
 
-        for attempt in range(1, POLL_MAX_RETRIES + 1):
-            try:
-                result = await self._api_get(query_url, timeout=self.POLL_TIMEOUT)
-                tx_error_count = 0  # 请求成功，重置连续错误计数
+        # 整个轮询循环共享一个 AsyncClient（连接池复用 + SSL 会话缓存）
+        async with httpx.AsyncClient(timeout=TIMEOUT_POLL_LOOP) as client:
+            for attempt in range(1, POLL_MAX_RETRIES + 1):
+                try:
+                    result = await self._api_get(query_url, client=client)
+                    tx_error_count = 0  # 请求成功，重置连续错误计数
 
-                data_field = result.get("data", {})
-                state = data_field.get("state", "")
+                    data_field = result.get("data", {})
+                    state = data_field.get("state", "")
 
-                if state == "done":
-                    progress = data_field.get("extractProgress", {})
-                    extracted_pages = progress.get("extractedPages", 0)
-                    total_pages = progress.get("totalPages", 0)
-                    result_url_obj = data_field.get("resultUrl", {})
-                    json_url = result_url_obj.get("jsonUrl", "")
-                    markdown_url = result_url_obj.get("markdownUrl", "")
-                    start_time = data_field.get("startTime", "")
-                    end_time = data_field.get("endTime", "")
-
-                    logger.info(
-                        f"任务完成 [{filename}]: jobId={job_id}, "
-                        f"页数={extracted_pages}/{total_pages}, "
-                        f"轮询次数={attempt}, "
-                        f"耗时={start_time}~{end_time}"
-                    )
-
-                    # 下载结果 JSON
-                    json_text = ""
-                    raw_json = None
-                    if json_url:
-                        try:
-                            json_text, raw_json = await self._download_result_json(json_url)
-                            logger.info(
-                                f"下载JSON结果成功 [{filename}]: {len(json_text)} 字符"
-                            )
-                        except Exception as e:
-                            exc_name = type(e).__name__
-                            logger.error(f"下载JSON结果失败 [{filename}]: [{exc_name}] {e}")
-                            return {
-                                "success": False,
-                                "error": f"下载结果失败: {e}",
-                            }
-                    else:
-                        logger.warning(f"resultUrl.jsonUrl 为空 [{filename}]")
-
-                    # 尝试下载 Markdown 结果（如果有）
-                    markdown_text = ""
-                    if markdown_url:
-                        try:
-                            markdown_text = await self._download_markdown_result(markdown_url)
-                            logger.info(
-                                f"下载Markdown结果成功 [{filename}]: {len(markdown_text)} 字符"
-                            )
-                        except Exception as e:
-                            logger.warning(f"下载Markdown结果失败 [{filename}]: {e}")
-
-                    return {
-                        "success": True,
-                        "json_text": json_text,
-                        "raw_json": raw_json,
-                        "markdown_text": markdown_text,
-                        "extracted_pages": extracted_pages,
-                        "total_pages": total_pages,
-                        "raw_result": data_field,
-                    }
-
-                elif state == "failed":
-                    error_msg = self._parse_error(data_field)
-                    logger.error(f"任务失败 [{filename}]: {error_msg}")
-                    return {"success": False, "error": error_msg}
-
-                elif state == "running":
-                    try:
+                    if state == "done":
                         progress = data_field.get("extractProgress", {})
-                        total = progress.get("totalPages", "?")
-                        extracted = progress.get("extractedPages", "?")
+                        extracted_pages = progress.get("extractedPages", 0)
+                        total_pages = progress.get("totalPages", 0)
+                        result_url_obj = data_field.get("resultUrl", {})
+                        json_url = result_url_obj.get("jsonUrl", "")
+                        markdown_url = result_url_obj.get("markdownUrl", "")
+                        start_time = data_field.get("startTime", "")
+                        end_time = data_field.get("endTime", "")
+
                         logger.info(
-                            f"轮询中 [{filename}] jobId={job_id}: "
-                            f"第{attempt}次, running {extracted}/{total} 页"
+                            f"任务完成 [{filename}]: jobId={job_id}, "
+                            f"页数={extracted_pages}/{total_pages}, "
+                            f"轮询次数={attempt}, "
+                            f"耗时={start_time}~{end_time}"
                         )
 
-                        # ---- 卡死检测 ----
-                        if extracted == last_extracted and total != "?":
-                            stuck_count += 1
+                        # 下载结果 JSON
+                        json_text = ""
+                        raw_json = None
+                        if json_url:
+                            try:
+                                json_text, raw_json = await self._download_result_json(json_url)
+                                logger.info(
+                                    f"下载JSON结果成功 [{filename}]: {len(json_text)} 字符"
+                                )
+                            except Exception as e:
+                                exc_name = type(e).__name__
+                                logger.error(f"下载JSON结果失败 [{filename}]: [{exc_name}] {e}")
+                                return {
+                                    "success": False,
+                                    "error": f"下载结果失败: {e}",
+                                }
                         else:
-                            stuck_count = 0
-                            last_extracted = extracted
+                            logger.warning(f"resultUrl.jsonUrl 为空 [{filename}]")
 
-                        if stuck_count >= STUCK_THRESHOLD:
-                            msg = (
-                                f"任务疑似卡死 [{filename}]: running {extracted}/{total} 页, "
-                                f"连续 {stuck_count} 次无变化 (jobId={job_id})"
+                        # 尝试下载 Markdown 结果（如果有）
+                        markdown_text = ""
+                        if markdown_url:
+                            try:
+                                markdown_text = await self._download_markdown_result(markdown_url)
+                                logger.info(
+                                    f"下载Markdown结果成功 [{filename}]: {len(markdown_text)} 字符"
+                                )
+                            except Exception as e:
+                                logger.warning(f"下载Markdown结果失败 [{filename}]: {e}")
+
+                        return {
+                            "success": True,
+                            "json_text": json_text,
+                            "raw_json": raw_json,
+                            "markdown_text": markdown_text,
+                            "extracted_pages": extracted_pages,
+                            "total_pages": total_pages,
+                            "raw_result": data_field,
+                        }
+
+                    elif state == "failed":
+                        error_msg = self._parse_error(data_field)
+                        logger.error(f"任务失败 [{filename}]: {error_msg}")
+                        return {"success": False, "error": error_msg}
+
+                    elif state == "running":
+                        try:
+                            progress = data_field.get("extractProgress", {})
+                            total = progress.get("totalPages", "?")
+                            extracted = progress.get("extractedPages", "?")
+                            logger.info(
+                                f"轮询中 [{filename}] jobId={job_id}: "
+                                f"第{attempt}次, running {extracted}/{total} 页"
                             )
-                            logger.warning(msg)
-                            return {"success": False, "error": f"任务卡死: {msg}"}
-                        # -----------------
-                    except Exception:
+
+                            # ---- 卡死检测 ----
+                            if isinstance(extracted, int) and isinstance(last_extracted, int):
+                                if extracted == last_extracted and total != "?":
+                                    stuck_count += 1
+                                else:
+                                    stuck_count = 0
+                                    last_extracted = extracted
+
+                            if stuck_count >= STUCK_THRESHOLD:
+                                msg = (
+                                    f"任务疑似卡死 [{filename}]: running {extracted}/{total} 页, "
+                                    f"连续 {stuck_count} 次无变化 (jobId={job_id})"
+                                )
+                                logger.warning(msg)
+                                return {"success": False, "error": f"任务卡死: {msg}"}
+                            # -----------------
+                        except Exception:
+                            logger.info(
+                                f"轮询中 [{filename}] jobId={job_id}: "
+                                f"第{attempt}次, running..."
+                            )
+
+                    elif state == "pending":
                         logger.info(
                             f"轮询中 [{filename}] jobId={job_id}: "
-                            f"第{attempt}次, running..."
+                            f"第{attempt}次, pending..."
+                        )
+                        # pending 阶段不检测卡死
+                        stuck_count = 0
+
+                    else:
+                        logger.info(
+                            f"轮询中 [{filename}] jobId={job_id}: "
+                            f"第{attempt}次, state={state}"
                         )
 
-                elif state == "pending":
-                    logger.info(
-                        f"轮询中 [{filename}] jobId={job_id}: "
-                        f"第{attempt}次, pending..."
-                    )
-                    # pending 阶段不检测卡死
-                    stuck_count = 0
+                    await asyncio.sleep(POLL_INTERVAL)
 
-                else:
-                    logger.info(
-                        f"轮询中 [{filename}] jobId={job_id}: "
-                        f"第{attempt}次, state={state}"
+                except Exception as e:
+                    exc_name = type(e).__name__
+                    exc_repr = repr(e) if repr(e) != f"{exc_name}()" else ""
+                    logger.warning(
+                        f"轮询异常 [{filename}] jobId={job_id} "
+                        f"(第{attempt}次): [{exc_name}] {e}"
+                        f"{' | ' + exc_repr if exc_repr else ''}"
                     )
 
-                await asyncio.sleep(POLL_INTERVAL)
+                    tx_error_count += 1
+                    if tx_error_count >= TX_ERROR_THRESHOLD:
+                        msg = (
+                            f"连续 {tx_error_count} 次网络异常，判定 API 不可达 "
+                            f"[{filename}] jobId={job_id}"
+                        )
+                        logger.error(msg)
+                        return {"success": False, "error": msg}
 
-            except Exception as e:
-                exc_name = type(e).__name__
-                exc_repr = repr(e) if repr(e) != f"{exc_name}()" else ""
-                logger.warning(
-                    f"轮询异常 [{filename}] jobId={job_id} "
-                    f"(第{attempt}次): [{exc_name}] {e}"
-                    f"{' | ' + exc_repr if exc_repr else ''}"
-                )
-
-                tx_error_count += 1
-                if tx_error_count >= TX_ERROR_THRESHOLD:
-                    msg = (
-                        f"连续 {tx_error_count} 次网络异常，判定 API 不可达 "
-                        f"[{filename}] jobId={job_id}"
-                    )
-                    logger.error(msg)
-                    return {"success": False, "error": msg}
-
-                if attempt >= POLL_MAX_RETRIES:
-                    return {"success": False, "error": f"轮询超时: {str(e)}"}
-                await asyncio.sleep(POLL_INTERVAL)
+                    if attempt >= POLL_MAX_RETRIES:
+                        return {"success": False, "error": f"轮询超时: {str(e)}"}
+                    await asyncio.sleep(POLL_INTERVAL)
 
         return {
             "success": False,
@@ -532,7 +541,7 @@ class PaddleOCRService:
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
         }
-        async with httpx.AsyncClient(timeout=self.DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT_DOWNLOAD, follow_redirects=True) as client:
             response = await client.get(json_url, headers=headers)
             response.raise_for_status()
             text = response.text
@@ -557,7 +566,7 @@ class PaddleOCRService:
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
         }
-        async with httpx.AsyncClient(timeout=self.DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT_DOWNLOAD, follow_redirects=True) as client:
             response = await client.get(markdown_url, headers=headers)
             response.raise_for_status()
             if not response.text:
@@ -578,7 +587,7 @@ class PaddleOCRService:
         batch_url = f"{self.job_url}/batch/{batch_id}"
         try:
             logger.info(f"批量查询结果: batchId={batch_id}")
-            result = await self._api_get(batch_url, timeout=self.POLL_TIMEOUT)
+            result = await self._api_get(batch_url, timeout=TIMEOUT_API_GET)
             data = result.get("data", [])
             logger.info(f"批量查询完成: batchId={batch_id}, 共 {len(data)} 条")
             return {"success": True, "results": data}

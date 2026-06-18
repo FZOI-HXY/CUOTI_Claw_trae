@@ -14,6 +14,7 @@ import io
 import uuid
 import shutil
 import zipfile
+import asyncio
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
@@ -26,12 +27,34 @@ import uvicorn
 
 from apps.web.api.config import settings, ENV_FILE_PATH
 from apps.web.api.logger import setup_logger
-from apps.web.api.paddle_service import PaddleOCRService
+
+# ---------------------------------------------------------------------------
+# 条件导入 PaddleOCRService（方案 3：httpx 优先 + 自动降级）
+#   - 开发模式：直接使用 httpx 版
+#   - PyInstaller 打包后：先尝试 httpx 版，若导入失败则降级到标准库版
+# ---------------------------------------------------------------------------
+import sys as _sys
+
+_use_standalone = False
+
+if getattr(_sys, 'frozen', False):
+    try:
+        from apps.web.api.paddle_service import PaddleOCRService as _HTTPService  # type: ignore[assignment]
+        PaddleOCRService = _HTTPService
+    except ImportError:
+        from apps.desktop.paddle_service_standalone import PaddleOCRService  # type: ignore[no-redef]
+        _use_standalone = True
+else:
+    from apps.web.api.paddle_service import PaddleOCRService  # type: ignore[no-redef]
+
 from apps.web.api.markdown_generator import MarkdownGenerator
 from apps.web.api.services.task_service import task_service as ts
 from apps.web.api.services.config_service import save_env_file
 
 logger = setup_logger("MainServer")
+
+if getattr(_sys, 'frozen', False):
+    logger.info(f"PaddleOCRService 加载模式: {'标准库降级' if _use_standalone else 'httpx'} (frozen)")
 
 # 初始化 FastAPI 应用
 app = FastAPI(
@@ -292,11 +315,14 @@ async def submit_task(
         with open(file_path, "rb") as f:
             image_data = f.read()
 
-        submit_result = await paddle_service.submit_task(
-            image_data=image_data,
-            filename=file_path.name,
-            page_ranges=page_ranges,
-            batch_id=batch_id,
+        submit_result = await asyncio.wait_for(
+            paddle_service.submit_task(
+                image_data=image_data,
+                filename=file_path.name,
+                page_ranges=page_ranges,
+                batch_id=batch_id,
+            ),
+            timeout=40.0,  # 硬超时：40 秒内必须返回
         )
 
         if not submit_result["success"]:
@@ -345,11 +371,14 @@ async def submit_task_by_url(request_data: dict):
     logger.info(f"通过URL提交异步任务: {filename} url={file_url}")
 
     try:
-        submit_result = await paddle_service.submit_task(
-            filename=filename,
-            file_url=file_url,
-            page_ranges=page_ranges,
-            batch_id=batch_id,
+        submit_result = await asyncio.wait_for(
+            paddle_service.submit_task(
+                filename=filename,
+                file_url=file_url,
+                page_ranges=page_ranges,
+                batch_id=batch_id,
+            ),
+            timeout=40.0,
         )
 
         if not submit_result["success"]:
@@ -508,7 +537,7 @@ async def _handle_task_done(task_id: str, task_info: dict, poll_status: dict):
         "json_text_preview": json_text[:2000] if json_text else "",
     }
 
-    report_dir = markdown_generator.save_report(
+    report_dir = await markdown_generator.save_report(
         original_filename=task_info["filename"],
         markdown_text=extracted["markdown_text"],
         images=extracted["images"],
@@ -651,7 +680,7 @@ async def process_image(file_id: str):
         if not result["success"]:
             raise Exception(result.get("error", "处理失败"))
 
-        report_dir = markdown_generator.save_report(
+        report_dir = await markdown_generator.save_report(
             original_filename=file_path.name,
             markdown_text=result["markdown_text"],
             images=result["images"],

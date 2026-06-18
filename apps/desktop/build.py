@@ -60,6 +60,7 @@ PY_MODULES = [
     # desktop 子包
     "apps.desktop.style",
     "apps.desktop.utils",
+    "apps.desktop.paddle_service_standalone",
     "apps.desktop.ui",
     "apps.desktop.ui.base_mixin",
     "apps.desktop.ui.upload_mixin",
@@ -123,6 +124,19 @@ BACKEND_HIDDEN_IMPORTS = [
     "aiofiles",
     "python_multipart",
     "multipart",
+    # httpx 及其依赖（异步 HTTP 请求，优先使用）
+    "httpx",
+    "httpcore",
+    "httpcore._async",
+    "httpcore._sync",
+    "h11",
+    "anyio",
+    "anyio._backends",
+    "anyio._backends._asyncio",
+    "sniffio",
+    # certifi SSL 证书（httpx / urllib HTTPS 通用）
+    "certifi",
+    "idna",
 ]
 
 # 必须收集完整子模块的包 (含二进制插件)
@@ -369,6 +383,9 @@ def get_pyinstaller_args(windowed: bool = False) -> list[str]:
     # === 收集子模块 (确保 Qt 平台插件被包含) ===
     for pkg in COLLECT_SUBMODULES:
         args.extend(["--collect-submodules", pkg])
+
+    # === 收集 certifi SSL 证书文件（urllib/httpx HTTPS 请求必需） ===
+    args.extend(["--collect-all", "certifi"])
 
     # === 收集 Qt 二进制文件 ===
     qt_binaries = [
