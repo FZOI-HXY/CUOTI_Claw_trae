@@ -15,12 +15,13 @@ def _discover_env_files() -> tuple[str, ...]:
     也能从 %APPDATA%/Claw/.env 继承 key。
 
     优先级（从低到高）:
-      1. 源码目录 .env（apps/web/api/.env）— 最低优先级
-      2. 开发模式数据目录
+      1. frozen 模式: _MEIPASS/.env（打包时包含的默认配置）— 最低优先级
+      2. 源码目录 .env（apps/web/api/.env）
+      3. 开发模式数据目录
          - Windows: %APPDATA%/Claw/.env
          - 其他: ~/.claw/.env
-      3. frozen 模式: exe 同级目录 .env — 便携模式
-      4. CLAW_ENV_FILE 环境变量 — 显式覆盖，最高优先级
+      4. frozen 模式: exe 同级目录 .env — 便携模式
+      5. CLAW_ENV_FILE 环境变量 — 显式覆盖，最高优先级
     """
     candidates: list[str] = []
     seen: set[str] = set()
@@ -30,21 +31,27 @@ def _discover_env_files() -> tuple[str, ...]:
             candidates.append(path)
             seen.add(path)
 
-    # 1. 源码目录 fallback（最低优先级）
+    # 1. frozen 模式: _MEIPASS/.env（打包时包含的默认配置，最低优先级）
+    if getattr(sys, 'frozen', False):
+        meipass = getattr(sys, '_MEIPASS', '')
+        if meipass:
+            _add(os.path.join(meipass, ".env"))
+
+    # 2. 源码目录 fallback
     _add(str(Path(__file__).parent / ".env"))
 
-    # 2. 开发模式数据目录
+    # 3. 开发模式数据目录
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
         _add(os.path.join(appdata, "Claw", ".env"))
     else:
         _add(os.path.join(os.path.expanduser("~"), ".claw", ".env"))
 
-    # 3. frozen 模式: exe 同级目录
+    # 4. frozen 模式: exe 同级目录（便携模式）
     if getattr(sys, 'frozen', False):
         _add(os.path.join(os.path.dirname(sys.executable), ".env"))
 
-    # 4. CLAW_ENV_FILE 显式覆盖（最高优先级）
+    # 5. CLAW_ENV_FILE 显式覆盖（最高优先级）
     _add(os.environ.get("CLAW_ENV_FILE", ""))
 
     if not candidates:
