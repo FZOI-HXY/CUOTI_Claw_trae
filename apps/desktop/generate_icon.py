@@ -102,17 +102,14 @@ def create_app_icon(output_path: str = "app_icon.ico", size: int = 256):
     )
 
     # 生成多分辨率 ICO
+    # 注意：PIL 的 ICO 保存不能同时使用 sizes 和 append_images 参数，
+    # 否则只会保存第一个尺寸。正确方式是用最大尺寸图像作为基础，
+    # 通过 sizes 参数让 PIL 自动缩放到所有目标尺寸。
     sizes = [16, 24, 32, 48, 64, 128, 256]
-    icons = []
-    for s in sizes:
-        resized = img.resize((s, s), Image.LANCZOS)
-        icons.append(resized)
-
-    icons[0].save(
+    img.save(
         output_path,
         format="ICO",
         sizes=[(s, s) for s in sizes],
-        append_images=icons[1:]
     )
 
     print(f"[OK] Icon generated: {output_path}")

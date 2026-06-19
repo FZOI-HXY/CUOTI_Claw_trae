@@ -7,6 +7,7 @@ import base64
 import re
 import json
 import asyncio
+import uuid
 import sys as _sys
 from datetime import datetime
 from pathlib import Path
@@ -457,7 +458,8 @@ class MarkdownGenerator:
             api_response.json      - API原始返回
         """
         now = datetime.now()
-        report_name = now.strftime("%Y%m%d_%H%M%S")
+        # 目录名加入 uuid 后缀，防止多任务并发完成时（同一秒）目录名冲突覆盖
+        report_name = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         report_dir = self.output_dir / report_name
         # 文件 I/O 通过 asyncio.to_thread 避免阻塞事件循环
         await asyncio.to_thread(report_dir.mkdir, parents=True, exist_ok=True)

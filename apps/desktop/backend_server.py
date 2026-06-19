@@ -83,27 +83,69 @@ def _setup_environment(data_dir: str):
         sys.path.insert(0, project_root)
 
 
+def _read_env_key(env_path: str) -> str:
+    """读取 .env 文件中的 PADDLEOCR_API_KEY 值"""
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("PADDLEOCR_API_KEY=") or line.startswith("paddleocr_api_key="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
+
+
 def _ensure_env_file(data_dir: str):
-    """确保 .env 文件存在，不存在则从模板复制或创建默认"""
+    """确保 .env 文件存在且有 API Key
+
+    frozen 模式下，如果 exe 同级 .env 不存在或 key 为空，
+    会尝试从开发模式数据目录（%APPDATA%/Claw/.env）继承配置。
+    """
     env_path = os.path.join(data_dir, ".env")
-    if os.path.exists(env_path):
+
+    # .env 不存在 → 创建或从模板复制
+    if not os.path.exists(env_path):
+        # 1. 尝试从源码目录复制
+        project_root = _get_project_root()
+        template = os.path.join(project_root, "apps", "web", "api", ".env")
+        if os.path.exists(template) and template != env_path:
+            shutil.copy(template, env_path)
+            return
+
+        # 2. 尝试从开发模式数据目录复制（frozen 模式继承开发配置）
+        if getattr(sys, 'frozen', False) and sys.platform == "win32":
+            appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+            dev_env = os.path.join(appdata, "Claw", ".env")
+            if os.path.exists(dev_env) and dev_env != env_path:
+                shutil.copy(dev_env, env_path)
+                print("[backend_server] 已从开发配置继承 .env", flush=True)
+                return
+
+        # 3. 创建默认 .env（key 为空，需用户手动配置）
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("# Claw 错题管理系统 配置文件\n")
+            f.write("# 首次使用请在应用中配置 API Token（系统配置 → API Token）\n")
+            f.write("# 从 https://aistudio.baidu.com/paddleocr/task 获取你的 API Token\n")
+            f.write('PADDLEOCR_API_KEY=\n')
+            f.write('PADDLEOCR_MODEL=PP-StructureV3\n')
+            f.write('PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs\n')
         return
 
-    # 1. 尝试从 backend 目录复制已有 .env
-    project_root = _get_project_root()
-    template = os.path.join(project_root, "apps", "web", "api", ".env")
-    if os.path.exists(template) and template != env_path:
-        shutil.copy(template, env_path)
-        return
+    # .env 存在 → 检查 API Key 是否为空
+    existing_key = _read_env_key(env_path)
+    if existing_key:
+        return  # 已有 key，无需处理
 
-    # 2. 创建默认 .env
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.write("# Claw 错题管理系统 配置文件\n")
-        f.write("# 首次使用请在应用中配置 API Token（系统配置 → API Token）\n")
-        f.write("# 从 https://aistudio.baidu.com/paddleocr/task 获取你的 API Token\n")
-        f.write('PADDLEOCR_API_KEY=\n')
-        f.write('PADDLEOCR_MODEL=PP-StructureV3\n')
-        f.write('PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs\n')
+    # key 为空 → 尝试从开发模式数据目录继承
+    if getattr(sys, 'frozen', False) and sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+        dev_env = os.path.join(appdata, "Claw", ".env")
+        if os.path.exists(dev_env) and dev_env != env_path:
+            dev_key = _read_env_key(dev_env)
+            if dev_key:
+                shutil.copy(dev_env, env_path)
+                print("[backend_server] 已从开发配置继承 API Key", flush=True)
 
 
 # ---- 服务器生命周期 ----

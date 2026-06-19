@@ -77,6 +77,7 @@ PY_MODULES = [
 # 需要作为数据文件打包的路径 (相对 PROJECT_DIR)
 DATA_FILES: list[tuple[str, str]] = [
     ("../../apps/web/frontend", "frontend"),    # Web 前端静态文件
+    ("app_icon.ico", "."),                       # 应用图标（运行时 setWindowIcon 需要）
     # ("local_cache", "local_cache"),  # 离线缓存目录
 ]
 
