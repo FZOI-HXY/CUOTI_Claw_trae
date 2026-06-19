@@ -27,12 +27,27 @@ API Token 已内置，开箱即用
       config_mixin.py  - 系统配置标签页
 """
 import sys
+import os
 from pathlib import Path
 
 # 确保项目根目录在 sys.path 中（支持从任意目录执行）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+
+# ---- 关键：在任何 app 模块导入之前设置环境变量 ----
+# apps.desktop.ui 等模块的导入链会触发 apps.web.api.config 的导入，
+# 此时 Settings() 单例被创建。若 CLAW_ENV_FILE 未设置，会使用错误的 .env 路径，
+# 导致 API Key 等配置无法加载。
+if not os.environ.get("CLAW_ENV_FILE"):
+    if getattr(sys, 'frozen', False):
+        _data_dir = os.path.dirname(sys.executable)
+    else:
+        _appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+        _data_dir = os.path.join(_appdata, "Claw")
+    os.makedirs(_data_dir, exist_ok=True)
+    os.environ["CLAW_ENV_FILE"] = os.path.join(_data_dir, ".env")
+    os.environ["CLAW_DATA_DIR"] = _data_dir
 
 from typing import List, Dict
 
@@ -41,7 +56,7 @@ from PyQt6.QtWidgets import (
     QLabel, QMessageBox, QTabWidget,
 )
 from PyQt6.QtCore import QThread, QTimer
-from PyQt6.QtGui import QPalette, QColor
+from PyQt6.QtGui import QPalette, QColor, QIcon
 
 # 内嵌后端服务
 import backend_server
@@ -191,10 +206,39 @@ def main():
         sys.exit(1)
 
 
+def _get_icon_path() -> str:
+    """获取应用图标路径（支持 frozen 和开发模式）"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后，图标通过 --add-data 打包到 _MEIPASS 根目录
+        base = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+        return os.path.join(base, "app_icon.ico")
+    # 开发模式：图标在 apps/desktop/ 目录
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.ico")
+
+
 def _do_main():
+    # Windows: 设置 AppUserModelID，让任务栏显示自定义图标而非 Python 默认图标
+    # 必须在 QApplication 创建之前调用
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "ClawTeam.Claw.Desktop.1.0"
+            )
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.setApplicationName("Claw-Desktop")
     app.setOrganizationName("ClawTeam")
+
+    # 设置应用图标（影响任务栏、Alt+Tab、窗口标题栏）
+    icon_path = _get_icon_path()
+    if os.path.exists(icon_path):
+        app_icon = QIcon(icon_path)
+        app.setWindowIcon(app_icon)
+    else:
+        print(f"[Claw] 警告: 图标文件不存在: {icon_path}", flush=True)
 
     app.setQuitOnLastWindowClosed(False)
 
@@ -234,6 +278,9 @@ def _do_main():
     print("[Claw] 创建主窗口...", flush=True)
     try:
         window = StandaloneApp()
+        # 设置窗口级图标（确保 Alt+Tab 和任务栏预览正确显示）
+        if os.path.exists(icon_path):
+            window.setWindowIcon(QIcon(icon_path))
         print("[Claw] 主窗口已创建", flush=True)
     except Exception as e:
         import traceback

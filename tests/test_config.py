@@ -16,26 +16,33 @@ import pytest
 
 @pytest.mark.unit
 class TestSettingsDefaults:
+    """测试默认值 — 使用 _env_file="" 避免读取用户 .env 配置"""
+
     def test_default_api_url(self):
-        from config import settings
-        assert "paddleocr.aistudio-app.com" in settings.paddleocr_api_url
+        from config import Settings
+        s = Settings(_env_file="")  # type: ignore[reportCallIssue]
+        assert "paddleocr.aistudio-app.com" in s.paddleocr_api_url
 
     def test_default_model(self):
-        from config import settings
-        assert settings.paddleocr_model == "PaddleOCR-VL-1.6"
+        from config import Settings
+        s = Settings(_env_file="")  # type: ignore[reportCallIssue]
+        assert s.paddleocr_model == "PaddleOCR-VL-1.6"
 
     def test_default_host_port(self):
-        from config import settings
-        assert settings.host == "0.0.0.0"
-        assert settings.port == 8500
+        from config import Settings
+        s = Settings(_env_file="")  # type: ignore[reportCallIssue]
+        assert s.host == "0.0.0.0"
+        assert s.port == 8500
 
     def test_default_max_upload(self):
-        from config import settings
-        assert settings.max_upload_size_mb == 50
+        from config import Settings
+        s = Settings(_env_file="")  # type: ignore[reportCallIssue]
+        assert s.max_upload_size_mb == 50
 
     def test_default_log_level(self):
-        from config import settings
-        assert settings.log_level == "INFO"
+        from config import Settings
+        s = Settings(_env_file="")  # type: ignore[reportCallIssue]
+        assert s.log_level == "INFO"
 
 
 @pytest.mark.unit
@@ -89,5 +96,7 @@ class TestEnvFilePath:
 
     def test_env_file_path_backend_dir(self):
         from config import ENV_FILE_PATH
-        parent_name = ENV_FILE_PATH.parent.name
-        assert parent_name == "api"  # config.py 位于 apps/web/api/
+        # ENV_FILE_PATH 现在通过自动发现确定，可能是源码目录、
+        # %APPDATA%/Claw/ 或 exe 同级目录。只需验证它是有效的 .env 路径。
+        assert ENV_FILE_PATH.name == ".env"
+        assert ENV_FILE_PATH.parent.exists()

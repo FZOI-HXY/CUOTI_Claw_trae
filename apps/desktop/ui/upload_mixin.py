@@ -502,7 +502,11 @@ class UploadTabMixin:
             if idx >= len(self.file_queue):
                 continue
             item = self.file_queue[idx]
+            # 轮询请求本身失败（网络错误等）：不改变状态，留待下一轮重试
+            # 不能 continue 静默跳过 — 否则该任务永远 processing
             if "error" in r and r["error"]:
+                # 记录错误信息但不改变状态，让下一轮轮询继续尝试
+                item["_poll_error"] = r["error"]
                 continue
             data = r.get("data", {})
             if not data:
@@ -511,9 +515,11 @@ class UploadTabMixin:
                 if data.get("status") == "done":
                     item["status"] = "done"
                     item["result"] = data.get("result")
+                    item.pop("_poll_error", None)
                 else:
                     item["status"] = "error"
                     item["error"] = data.get("error", "处理失败")
+                    item.pop("_poll_error", None)
 
         done = sum(1 for q in self.file_queue if q["status"] in ("done", "error"))
         processing = [q for q in self.file_queue if q["status"] == "processing"]
@@ -565,15 +571,6 @@ class UploadTabMixin:
                     "error": item.get("error", "未知错误"),
                 })
 
-        # ---- 清理大型数据以释放内存 ----
-        for item in self.file_queue:
-            result = item.get("result")
-            if isinstance(result, dict):
-                # 保留元数据，移除非必要的大字段（base64图片、原始markdown）
-                result.pop("images", None)          # {filename: base64} 字典
-                result.pop("layout_image_base64", None)  # 版面分析图 base64
-                result.pop("markdown_text", None)   # 完整 markdown 文本
-
         self._set_step_complete("report")
         self.processing = False
         self.progress_text.setText("处理完成")
@@ -598,10 +595,20 @@ class UploadTabMixin:
         else:
             self.btn_batch_download.setEnabled(False)
 
+        # 预览第一个成功结果（必须在清理 markdown_text 之前执行）
         for r in self.batch_results:
             if r["success"]:
                 self._preview_first_result(r["file_id"])
                 break
+
+        # ---- 清理大型数据以释放内存（须在 _preview_first_result 之后） ----
+        for item in self.file_queue:
+            result = item.get("result")
+            if isinstance(result, dict):
+                # 保留元数据，移除非必要的大字段（base64图片、原始markdown）
+                result.pop("images", None)          # {filename: base64} 字典
+                result.pop("layout_image_base64", None)  # 版面分析图 base64
+                result.pop("markdown_text", None)   # 完整 markdown 文本
 
     def _preview_first_result(self, file_id: str):
         for item in self.file_queue:
