@@ -11,6 +11,7 @@
 参考文档: https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5
 """
 import io
+import re
 import uuid
 import shutil
 import zipfile
@@ -18,6 +19,9 @@ import asyncio
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
+from time import time as _time
+from collections import defaultdict
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +29,7 @@ from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, Res
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
-from apps.web.api.config import settings, ENV_FILE_PATH
+from apps.web.api.config import settings, ENV_FILE_PATH, validate_api_token
 from apps.web.api.logger import setup_logger
 from apps.web.api.models.schemas import ConfigUpdateRequest
 
@@ -57,11 +61,20 @@ logger = setup_logger("MainServer")
 if getattr(_sys, 'frozen', False):
     logger.info(f"PaddleOCRService 加载模式: {'标准库降级' if _use_standalone else 'httpx'} (frozen)")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动时执行安全检查。"""
+    if not validate_api_token():
+        logger.warning("PaddleOCR API Token 未配置，OCR 功能将不可用。请在系统设置中配置。")
+    logger.info(f"速率限制: {settings.rate_limit_requests} 请求/{settings.rate_limit_window}秒")
+    yield
+
 # 初始化 FastAPI 应用
 app = FastAPI(
     title="错题管理系统",
     description="基于 PaddleOCR PP-StructureV3 的智能错题识别与管理系统",
     version="1.2.0",
+    lifespan=lifespan,
 )
 
 # CORS 配置（仅允许本机访问，桌面应用内嵌后端不暴露到外网）
@@ -85,6 +98,83 @@ paddle_service = PaddleOCRService(
 markdown_generator = MarkdownGenerator(output_dir=settings.get_output_path())
 
 SYSTEM_START_TIME = datetime.now()
+
+
+# ============ 安全工具函数 ============
+
+def _secure_filename(filename: str) -> str:
+    """安全化文件名，防止路径穿越攻击。
+
+    1. 提取纯文件名（剥离所有路径分隔符）
+    2. 移除危险字符（<>:"/\\|?*\\x00-\\x1f）
+    3. 限制文件名长度（255字符）
+
+    Returns:
+        安全的文件名字符串（仅文件名部分，不含路径）。
+    """
+    if not filename:
+        return ""
+    # 取纯文件名，剥离任何路径前缀
+    safe = Path(filename).name
+    # 移除危险字符
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', safe)
+    # 移除开头的点和空格（防止隐藏文件名攻击）
+    safe = safe.lstrip('. ')
+    # 限制长度
+    if len(safe) > 255:
+        p = Path(safe)
+        ext = p.suffix
+        max_name_len = 255 - len(ext)
+        safe = p.stem[:max_name_len] + ext
+    return safe or "upload"
+
+
+def _extract_safe_extension(filename: str) -> str:
+    """从文件名中安全提取扩展名，防止路径穿越。
+
+    使用 _secure_filename 先清洗文件名，再提取后缀。
+    """
+    safe_name = _secure_filename(filename)
+    ext = Path(safe_name).suffix or ".png"
+    # 确保扩展名只包含字母数字
+    ext = re.sub(r'[^a-zA-Z0-9.]', '', ext)
+    return ext if ext.startswith('.') else '.png'
+
+
+# ============ 速率限制中间件 ============
+
+_rate_limit_store: dict = defaultdict(list)
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """简单的内存速率限制中间件，防止暴力请求。"""
+    # 健康检查端点不限速
+    if request.url.path in ("//", "/api/health"):
+        return await call_next(request)
+
+    client_ip = request.client.host if request.client else "unknown"
+    now = _time()
+    window = settings.rate_limit_window
+    max_requests = settings.rate_limit_requests
+
+    # 清理过期记录
+    _rate_limit_store[client_ip] = [
+        t for t in _rate_limit_store[client_ip] if now - t < window
+    ]
+
+    if len(_rate_limit_store[client_ip]) >= max_requests:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "success": False,
+                "error": "请求过于频繁，请稍后再试",
+                "code": "RATE_LIMITED",
+            },
+        )
+
+    _rate_limit_store[client_ip].append(now)
+    return await call_next(request)
 
 
 # ============ 路径安全校验 ============
@@ -128,11 +218,13 @@ async def http_exception_handler(_request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """全局未知异常处理器"""
+    """全局未知异常处理器，生产环境不泄露内部细节。"""
     logger.error(f"未处理异常 [{request.method} {request.url.path}]: {exc}", exc_info=True)
+    # 生产环境返回通用错误消息，开发环境返回详细信息便于调试
+    error_detail = str(exc) if settings.debug else "服务器内部错误"
     return JSONResponse(
         status_code=500,
-        content={"success": False, "error": str(exc), "code": "INTERNAL_ERROR"},
+        content={"success": False, "error": error_detail, "code": "INTERNAL_ERROR"},
     )
 
 
@@ -181,6 +273,10 @@ async def get_config():
         "output_dir": settings.output_dir,
         "max_upload_size_mb": settings.max_upload_size_mb,
         "log_level": settings.log_level,
+        "poll_interval": settings.poll_interval,
+        "poll_max_retries": settings.poll_max_retries,
+        "rate_limit_requests": settings.rate_limit_requests,
+        "rate_limit_window": settings.rate_limit_window,
     }
 
 
@@ -195,6 +291,8 @@ async def update_config(config: ConfigUpdateRequest):
         "host", "port", "debug",
         "upload_dir", "output_dir", "log_dir",
         "max_upload_size_mb", "log_level",
+        "poll_interval", "poll_max_retries",
+        "rate_limit_requests", "rate_limit_window",
     })
 
     try:
@@ -283,9 +381,8 @@ async def upload_image(file: UploadFile = File(...)):
     try:
         upload_path = settings.get_upload_path()
         file_id = uuid.uuid4().hex
-        # 安全提取扩展名：先取纯文件名（剥离路径分隔符），再取后缀
-        safe_name = Path(file.filename).name if file.filename else ""
-        ext = Path(safe_name).suffix or ".png"
+        # 安全提取扩展名：使用 _extract_safe_extension 防止路径穿越
+        ext = _extract_safe_extension(file.filename)
         saved_name = f"{file_id}{ext}"
         saved_path = upload_path / saved_name
 
@@ -305,7 +402,8 @@ async def upload_image(file: UploadFile = File(...)):
         }
     except Exception as e:
         logger.error(f"文件上传失败: {e}")
-        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+        error_detail = f"文件保存失败: {e}" if settings.debug else "文件保存失败"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 # ============ 异步任务 API ============
@@ -370,7 +468,8 @@ async def submit_task(
         raise
     except Exception as e:
         logger.error(f"提交任务失败 [{file_id}]: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_detail = str(e) if settings.debug else "提交任务失败"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.post("/api/submit-url")
@@ -425,7 +524,8 @@ async def submit_task_by_url(request_data: dict):
         raise
     except Exception as e:
         logger.error(f"URL提交失败 [{filename}]: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_detail = str(e) if settings.debug else "提交任务失败"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.get("/api/batch/{batch_id}")
@@ -446,7 +546,8 @@ async def get_batch_results(batch_id: str):
         raise
     except Exception as e:
         logger.error(f"批量查询失败 batchId={batch_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_detail = str(e) if settings.debug else "批量查询失败"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.post("/api/poll/{task_id}")
@@ -783,7 +884,8 @@ async def process_image(file_id: str):
             "processing_time": 0,
             "error": str(e),
         })
-        raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
+        error_detail = f"处理失败: {e}" if settings.debug else "处理失败"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @app.post("/api/upload/batch")
@@ -817,9 +919,8 @@ async def upload_images_batch(files: List[UploadFile] = File(...)):
 
             upload_path = settings.get_upload_path()
             file_id = uuid.uuid4().hex
-            # 安全提取扩展名：先取纯文件名（剥离路径分隔符），再取后缀
-            safe_name = Path(file.filename).name if file.filename else ""
-            ext = Path(safe_name).suffix or ".png"
+            # 安全提取扩展名：使用 _extract_safe_extension 防止路径穿越
+            ext = _extract_safe_extension(file.filename)
             saved_name = f"{file_id}{ext}"
             saved_path = upload_path / saved_name
 
@@ -1089,7 +1190,8 @@ async def delete_report(report_id: str):
         return {"success": True, "message": f"报告 {report_id} 已删除"}
     except Exception as e:
         logger.error(f"删除报告失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_detail = str(e) if settings.debug else "删除报告失败"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 # ============ 静态文件服务 ============

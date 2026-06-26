@@ -4,6 +4,7 @@
 import os
 import sys
 from pathlib import Path
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,17 +12,18 @@ def _discover_env_files() -> tuple[str, ...]:
     """发现所有候选 .env 文件（按优先级从低到高排序）
 
     pydantic-settings 会按顺序读取多个 .env 文件，
-    后面的文件中的值会覆盖前面的。这样即使 exe 同级 .env 的 key 为空，
-    也能从 %APPDATA%/Claw/.env 继承 key。
+    后面的文件中的值会覆盖前面的。
 
-    优先级（从低到高）:
-      1. frozen 模式: _MEIPASS/.env（打包时包含的默认配置）— 最低优先级
-      2. 源码目录 .env（apps/web/api/.env）
-      3. 开发模式数据目录
-         - Windows: %APPDATA%/Claw/.env
-         - 其他: ~/.claw/.env
-      4. frozen 模式: exe 同级目录 .env — 便携模式
-      5. CLAW_ENV_FILE 环境变量 — 显式覆盖，最高优先级
+    frozen 模式优先级（从低到高）:
+      1. 用户数据目录 .env（%APPDATA%/Claw/.env 或 ~/.claw/.env）— 旧配置，最低优先级
+      2. _MEIPASS/.env（打包时包含的默认配置）— 打包时继承的开发环境配置
+      3. exe 同级目录 .env — 便携模式，允许用户在 exe 目录自定义
+      4. CLAW_ENV_FILE 环境变量 — 显式覆盖，最高优先级
+
+    开发模式优先级（从低到高）:
+      1. 源码目录 .env — 开发配置
+      2. 用户数据目录 .env — 用户修改的配置
+      3. CLAW_ENV_FILE 环境变量 — 显式覆盖
     """
     candidates: list[str] = []
     seen: set[str] = set()
@@ -31,27 +33,38 @@ def _discover_env_files() -> tuple[str, ...]:
             candidates.append(path)
             seen.add(path)
 
-    # 1. frozen 模式: _MEIPASS/.env（打包时包含的默认配置，最低优先级）
-    if getattr(sys, 'frozen', False):
+    is_frozen = getattr(sys, 'frozen', False)
+
+    if is_frozen:
+        # frozen 模式：旧配置最低，打包时的配置优先
+
+        # 1. 用户数据目录 .env（旧配置，最低优先级）
+        if sys.platform == "win32":
+            appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+            _add(os.path.join(appdata, "Claw", ".env"))
+        else:
+            _add(os.path.join(os.path.expanduser("~"), ".claw", ".env"))
+
+        # 2. _MEIPASS/.env（打包时包含的默认配置，优先于旧配置）
         meipass = getattr(sys, '_MEIPASS', '')
         if meipass:
             _add(os.path.join(meipass, ".env"))
 
-    # 2. 源码目录 fallback
-    _add(str(Path(__file__).parent / ".env"))
-
-    # 3. 开发模式数据目录
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-        _add(os.path.join(appdata, "Claw", ".env"))
-    else:
-        _add(os.path.join(os.path.expanduser("~"), ".claw", ".env"))
-
-    # 4. frozen 模式: exe 同级目录（便携模式）
-    if getattr(sys, 'frozen', False):
+        # 3. exe 同级目录 .env（便携模式）
         _add(os.path.join(os.path.dirname(sys.executable), ".env"))
 
-    # 5. CLAW_ENV_FILE 显式覆盖（最高优先级）
+    else:
+        # 开发模式：源码目录配置优先
+        _add(str(Path(__file__).parent / ".env"))
+
+        # 用户数据目录 .env（用户修改的配置）
+        if sys.platform == "win32":
+            appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+            _add(os.path.join(appdata, "Claw", ".env"))
+        else:
+            _add(os.path.join(os.path.expanduser("~"), ".claw", ".env"))
+
+    # CLAW_ENV_FILE 显式覆盖（最高优先级）
     _add(os.environ.get("CLAW_ENV_FILE", ""))
 
     if not candidates:
@@ -121,9 +134,33 @@ class Settings(BaseSettings):
     log_dir: str = "./logs"
     max_upload_size_mb: int = 50
 
+    # 轮询配置（PaddleOCR 异步任务）
+    poll_interval: int = 5          # 轮询间隔（秒）
+    poll_max_retries: int = 120     # 最大轮询次数
+
+    # 速率限制配置
+    rate_limit_requests: int = 60   # 每窗口最大请求数
+    rate_limit_window: int = 60      # 窗口大小（秒）
+
     # 日志配置
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+    @field_validator("max_upload_size_mb")
+    @classmethod
+    def validate_max_upload_size(cls, v: int) -> int:
+        """限制上传大小在 1-500MB 之间"""
+        if v < 1 or v > 500:
+            raise ValueError("max_upload_size_mb 必须在 1-500 之间")
+        return v
+
+    @field_validator("poll_interval")
+    @classmethod
+    def validate_poll_interval(cls, v: int) -> int:
+        """轮询间隔至少 1 秒"""
+        if v < 1:
+            raise ValueError("poll_interval 至少为 1 秒")
+        return v
 
     def _resolve_path(self, dir_path: str) -> Path:
         """解析路径，支持 CLAW_DATA_DIR 环境变量作为根目录"""
@@ -179,3 +216,19 @@ if not settings.paddleocr_api_key:
 # .env 文件的绝对路径，供写入配置使用
 # 指向最高优先级的 .env（pydantic 读取顺序的最后一个）
 ENV_FILE_PATH = Path(_RESOLVED_ENV_FILES[-1]) if _RESOLVED_ENV_FILES else Path(__file__).parent / ".env"
+
+
+def validate_api_token() -> bool:
+    """启动时校验 API Token 是否已配置。
+
+    Returns:
+        True 如果 Token 已配置，False 如果未配置（仅警告，不阻止启动）。
+    """
+    if not settings.paddleocr_api_key:
+        import warnings
+        warnings.warn(
+            "PaddleOCR API Token 未配置！请在系统设置中配置 API Token 后才能使用 OCR 功能。",
+            stacklevel=2,
+        )
+        return False
+    return True

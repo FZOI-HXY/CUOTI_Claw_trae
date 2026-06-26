@@ -61,6 +61,10 @@ class ConfigUpdateRequest(BaseModel):
     log_dir: Optional[str] = None
     max_upload_size_mb: Optional[int] = None
     log_level: Optional[str] = None
+    poll_interval: Optional[int] = None
+    poll_max_retries: Optional[int] = None
+    rate_limit_requests: Optional[int] = None
+    rate_limit_window: Optional[int] = None
 
 
 # ============ 上传 ============

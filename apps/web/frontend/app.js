@@ -69,8 +69,10 @@
         toast.className = `toast ${type}`;
         toast.innerHTML = `
             <span class="toast-icon">${icons[type] || icons.info}</span>
-            <span class="toast-message">${message}</span>
+            <span class="toast-message"></span>
         `;
+        // 使用 textContent 防止 XSS
+        toast.querySelector('.toast-message').textContent = message;
         dom.toastContainer.appendChild(toast);
         setTimeout(() => toast.remove(), 3200);
     }
@@ -244,12 +246,13 @@
                 'error': '\u274C',
             }[item.status] || '';
 
+            const safeName = escapeHtml(item.name);
             const previewHtml = item.previewUrl
-                ? `<img class="queue-preview-img" src="${item.previewUrl}" alt="${item.name}">`
+                ? `<img class="queue-preview-img" src="${escapeHtml(item.previewUrl)}" alt="${safeName}">`
                 : '';
 
             const errorHtml = item.error
-                ? `<div class="queue-error">${item.error}</div>`
+                ? `<div class="queue-error">${escapeHtml(item.error)}</div>`
                 : '';
 
             return `
@@ -257,7 +260,7 @@
                     <span class="queue-index">#${idx + 1}</span>
                     <div class="queue-preview">${previewHtml}</div>
                     <div class="queue-info">
-                        <span class="queue-name" title="${item.name}">${item.name}</span>
+                        <span class="queue-name" title="${safeName}">${safeName}</span>
                         <span class="queue-size">${formatFileSize(item.size)}</span>
                     </div>
                     <span class="queue-status-icon">${statusIcon}</span>
@@ -724,10 +727,10 @@
                 ${state.batchResults.map((r, idx) => `
                     <div class="batch-result-item ${r.success ? 'result-success' : 'result-error'}">
                         <span class="batch-result-index">#${idx + 1}</span>
-                        <span class="batch-result-name" title="${r.name}">${r.name.length > 40 ? r.name.slice(0, 40) + '...' : r.name}</span>
+                        <span class="batch-result-name" title="${escapeHtml(r.name)}">${escapeHtml(r.name.length > 40 ? r.name.slice(0, 40) + '...' : r.name)}</span>
                         <span class="batch-result-status">${r.success ? '\u2705 成功' : '\u274C 失败'}</span>
                         ${r.success ? `<span class="batch-result-time">${r.processingTime}s</span>` : ''}
-                        <button class="btn btn-ghost btn-sm view-file-result-btn" data-file-id="${r.fileId}" data-name="${r.name}">查看</button>
+                        <button class="btn btn-ghost btn-sm view-file-result-btn" data-file-id="${escapeHtml(String(r.fileId || ''))}" data-name="${escapeHtml(r.name)}">查看</button>
                     </div>
                 `).join('')}
             </div>
@@ -854,7 +857,14 @@
             return src;
         }
 
-        let html = md
+        // XSS 防护：移除 script 标签、事件处理器和 javascript: 协议
+        let sanitized = md
+            .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+            .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+            .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+            .replace(/javascript:/gi, '');
+
+        let html = sanitized
             // 先处理 HTML img 标签（PP-StructureV3 输出中可能包含）
             .replace(/<img\s+src="([^"]+)"(?:\s+alt="([^"]*)")?[^>]*\/?>/gi,
                 (match, src, alt) => `<img src="${resolveImagePath(src)}" alt="${alt || ''}">`)
@@ -1021,8 +1031,8 @@
 
             dom.historyTbody.innerHTML = data.items.map(item => `
                 <tr>
-                    <td><span class="report-id">#${item.id}</span></td>
-                    <td title="${item.filename}">${item.filename.length > 25 ? item.filename.slice(0, 25) + '...' : item.filename}</td>
+                    <td><span class="report-id">#${escapeHtml(item.id)}</span></td>
+                    <td title="${escapeHtml(item.filename)}">${escapeHtml(item.filename.length > 25 ? item.filename.slice(0, 25) + '...' : item.filename)}</td>
                     <td>${formatTime(item.timestamp)}</td>
                     <td>
                         <span class="badge ${item.success ? 'badge-success' : 'badge-error'}">
@@ -1032,7 +1042,7 @@
                     <td>${item.processing_time || 0}s</td>
                     <td>${item.images_count || 0}</td>
                     <td>
-                        <button class="btn btn-ghost btn-sm view-report-btn" data-report-id="${item.report_dir ? item.report_dir.split('/').pop().split('\\').pop() : ''}">
+                        <button class="btn btn-ghost btn-sm view-report-btn" data-report-id="${escapeHtml(item.report_dir ? item.report_dir.split('/').pop().split('\\').pop() : '')}">
                             查看
                         </button>
                     </td>
@@ -1062,15 +1072,15 @@
             }
 
             dom.reportsGrid.innerHTML = data.reports.map(r => `
-                <div class="report-card" data-report-id="${r.id}">
+                <div class="report-card" data-report-id="${escapeHtml(r.id)}">
                     <div class="report-card-header">
-                        <span class="report-id">#${r.id}</span>
+                        <span class="report-id">#${escapeHtml(r.id)}</span>
                         <span class="report-date">${formatTime(r.created_time)}</span>
                     </div>
                     <div class="report-actions">
-                        <button class="btn btn-secondary btn-sm view-report-btn" data-report-id="${r.id}">查看详情</button>
-                        <button class="btn btn-ghost btn-sm download-report-btn" data-report-id="${r.id}">下载</button>
-                        <button class="btn btn-ghost btn-sm delete-report-btn" data-report-id="${r.id}" style="color:var(--error)">删除</button>
+                        <button class="btn btn-secondary btn-sm view-report-btn" data-report-id="${escapeHtml(r.id)}">查看详情</button>
+                        <button class="btn btn-ghost btn-sm download-report-btn" data-report-id="${escapeHtml(r.id)}">下载</button>
+                        <button class="btn btn-ghost btn-sm delete-report-btn" data-report-id="${escapeHtml(r.id)}" style="color:var(--error)">删除</button>
                     </div>
                 </div>
             `).join('');
@@ -1118,7 +1128,7 @@
             }
             dom.resultSection.style.display = 'block';
             dom.batchResults.innerHTML = '';
-            dom.resultStats.innerHTML = `<div class="stat-item"><span class="stat-value">#${reportId}</span><span class="stat-label">报告编号</span></div>`;
+            dom.resultStats.innerHTML = `<div class="stat-item"><span class="stat-value">#${escapeHtml(reportId || '')}</span><span class="stat-label">报告编号</span></div>`;
             switchView('upload');
             window.scrollTo({ top: dom.resultSection.offsetTop - 80, behavior: 'smooth' });
         } catch (error) {
