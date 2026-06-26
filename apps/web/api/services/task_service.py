@@ -22,8 +22,18 @@ DB_PATH = settings.get_output_path() / "processing_history.db"
 
 
 def _init_db():
-    """初始化 SQLite 数据库表"""
+    """初始化 SQLite 数据库表
+
+    启用 WAL（Write-Ahead Logging）模式以提升并发读写性能：
+    - 读操作不阻塞写操作
+    - 写操作不阻塞读操作
+    - 适合高频读取、低频写入的场景
+    """
     db = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    # 启用 WAL 模式，提升并发性能
+    db.execute("PRAGMA journal_mode=WAL")
+    # 设置忙等待超时（毫秒），避免并发写入时立即报错
+    db.execute("PRAGMA busy_timeout=5000")
     db.execute("""
         CREATE TABLE IF NOT EXISTS history (
             id TEXT PRIMARY KEY,

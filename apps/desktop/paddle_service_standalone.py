@@ -24,15 +24,10 @@ import socket
 from typing import Optional, Dict, Any
 
 from apps.web.api.logger import setup_logger
+from apps.web.api.config import settings
 from apps.web.api.services.paddle_parser import extract_ocr_result
 
 logger = setup_logger("PaddleOCRService")
-
-# ---------------------------------------------------------------------------
-# 轮询配置
-# ---------------------------------------------------------------------------
-POLL_INTERVAL = 5       # 轮询间隔（秒），官方建议 5s
-POLL_MAX_RETRIES = 120  # 最大轮询次数（总共 600 秒）
 
 # 模型分组
 VL_MODELS = {"PaddleOCR-VL-1.6", "PaddleOCR-VL-1.5", "PaddleOCR-VL"}
@@ -424,7 +419,7 @@ class PaddleOCRService:
         stuck_count = 0
         tx_error_count = 0
 
-        for attempt in range(1, POLL_MAX_RETRIES + 1):
+        for attempt in range(1, settings.poll_max_retries + 1):
             try:
                 result = await self._api_get(query_url, timeout=READ_TIMEOUT)
                 tx_error_count = 0
@@ -533,7 +528,7 @@ class PaddleOCRService:
                         f"第{attempt}次, state={state}"
                     )
 
-                await asyncio.sleep(POLL_INTERVAL)
+                await asyncio.sleep(settings.poll_interval)
 
             except Exception as e:
                 exc_name = type(e).__name__
@@ -553,13 +548,13 @@ class PaddleOCRService:
                     logger.error(msg)
                     return {"success": False, "error": msg}
 
-                if attempt >= POLL_MAX_RETRIES:
+                if attempt >= settings.poll_max_retries:
                     return {"success": False, "error": f"轮询超时: {str(e)}"}
-                await asyncio.sleep(POLL_INTERVAL)
+                await asyncio.sleep(settings.poll_interval)
 
         return {
             "success": False,
-            "error": f"轮询超时 ({POLL_MAX_RETRIES * POLL_INTERVAL}s)",
+            "error": f"轮询超时 ({settings.poll_max_retries * settings.poll_interval}s)",
             "filename": filename,
         }
 

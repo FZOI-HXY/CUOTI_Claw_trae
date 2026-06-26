@@ -21,6 +21,10 @@ ENV_KEY_MAPPING = {
     "log_dir": "LOG_DIR",
     "max_upload_size_mb": "MAX_UPLOAD_SIZE_MB",
     "log_level": "LOG_LEVEL",
+    "poll_interval": "POLL_INTERVAL",
+    "poll_max_retries": "POLL_MAX_RETRIES",
+    "rate_limit_requests": "RATE_LIMIT_REQUESTS",
+    "rate_limit_window": "RATE_LIMIT_WINDOW",
 }
 
 
