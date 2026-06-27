@@ -360,12 +360,12 @@ async def batch_delete_history(ids: dict[str, list[str]]):
 
 @app.post("/api/upload")
 async def upload_image(file: UploadFile = File(...)):
-    """上传图片文件"""
-    allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp", "image/tiff"}
+    """上传图片或 PDF 文件"""
+    allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp", "image/tiff", "application/pdf"}
     if file.content_type and file.content_type not in allowed_types:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件类型: {file.content_type}。支持: JPEG, PNG, BMP, WebP, TIFF",
+            detail=f"不支持的文件类型: {file.content_type}。支持: JPEG, PNG, BMP, WebP, TIFF, PDF",
         )
 
     file.file.seek(0, 2)
@@ -895,7 +895,7 @@ async def upload_images_batch(files: List[UploadFile] = File(...)):
         raise HTTPException(status_code=400, detail="未选择任何文件")
 
     results = []
-    allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp", "image/tiff"}
+    allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp", "image/tiff", "application/pdf"}
     max_size = settings.max_upload_size_mb * 1024 * 1024
 
     for file in files:
