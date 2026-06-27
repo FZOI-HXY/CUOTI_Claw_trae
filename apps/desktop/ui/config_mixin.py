@@ -176,8 +176,8 @@ class ConfigTabMixin:
         form = self._card_form()
 
         self.cfg_host = self._form_row(form, "监听地址:")
-        self.cfg_host.setPlaceholderText("0.0.0.0")
-        self.cfg_host.setToolTip("0.0.0.0 表示监听所有网络接口；127.0.0.1 仅本机访问")
+        self.cfg_host.setPlaceholderText("127.0.0.1")
+        self.cfg_host.setToolTip("0.0.0.0 表示监听所有网络接口；127.0.0.1 仅本机访问（推荐）")
 
         self.cfg_port = QSpinBox()
         self.cfg_port.setRange(1, 65535)
@@ -337,7 +337,7 @@ class ConfigTabMixin:
         self.cfg_api_token.setEchoMode(QLineEdit.EchoMode.Password)
         self._token_toggle_btn.setText("👁")
 
-        self.cfg_host.setText(config.get("host", "0.0.0.0"))
+        self.cfg_host.setText(config.get("host", "127.0.0.1"))
         self.cfg_port.setValue(config.get("port", 8500))
         self.cfg_max_size.setValue(config.get("max_upload_size_mb", 50))
         idx = self.cfg_log_level.findText(config.get("log_level", "INFO"))

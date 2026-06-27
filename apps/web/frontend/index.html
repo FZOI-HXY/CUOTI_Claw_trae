@@ -1,10 +1,12 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" style="color-scheme: dark;">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0a0e17">
     <title>错题管理系统 - Claw</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <!-- MathJax 3: LaTeX 公式渲染 -->
     <script>
     window.MathJax = {
@@ -28,43 +30,46 @@
     <header class="header">
         <div class="header-brand">
             <div class="brand-logo">
-                <svg viewBox="0 0 40 40" class="logo-icon">
+                <svg viewBox="0 0 40 40" class="logo-icon" aria-hidden="true">
                     <path d="M20 2L4 12v16l16 10 16-10V12L20 2z" fill="none" stroke="currentColor" stroke-width="2"/>
                     <path d="M20 10v20M10 16L20 10l10 6" fill="none" stroke="currentColor" stroke-width="1.5"/>
                     <circle cx="20" cy="20" r="4" fill="currentColor" opacity="0.6"/>
                 </svg>
             </div>
-            <h1 class="brand-title">Claw<span class="brand-subtitle">错题管理</span></h1>
+            <h1 class="brand-title" translate="no">Claw<span class="brand-subtitle">错题管理</span></h1>
         </div>
         <nav class="header-nav">
             <button class="nav-btn active" data-view="upload">
-                <span class="nav-icon">&#8593;</span>
+                <span class="nav-icon" aria-hidden="true">&#8593;</span>
                 上传处理
             </button>
             <button class="nav-btn" data-view="history">
-                <span class="nav-icon">&#9776;</span>
+                <span class="nav-icon" aria-hidden="true">&#9776;</span>
                 处理记录
             </button>
             <button class="nav-btn" data-view="reports">
-                <span class="nav-icon">&#9745;</span>
+                <span class="nav-icon" aria-hidden="true">&#9745;</span>
                 报告中心
             </button>
             <button class="nav-btn" data-view="config">
-                <span class="nav-icon">&#9881;</span>
+                <span class="nav-icon" aria-hidden="true">&#9881;</span>
                 系统配置
             </button>
         </nav>
         <div class="header-status">
-            <span class="status-dot" id="status-dot"></span>
-            <span class="status-text" id="status-text">检测中...</span>
+            <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+            <span class="status-text" id="status-text">检测中…</span>
         </div>
     </header>
 
+    <!-- 跳转到主内容 -->
+    <a href="#main-content" class="skip-link">跳转到主内容</a>
+
     <!-- 主内容区 -->
-    <main class="main-content">
+    <main class="main-content" id="main-content">
         <!-- 上传处理视图 -->
         <section class="view-panel active" id="view-upload">
-            <div class="upload-zone" id="upload-zone">
+            <div class="upload-zone" id="upload-zone" tabindex="0" role="button" aria-label="上传文件，点击或拖拽文件到此处">
                 <div class="upload-illustration">
                     <svg viewBox="0 0 120 80" class="upload-svg">
                         <rect x="10" y="10" width="100" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="6,4"/>
@@ -74,8 +79,8 @@
                 </div>
                 <p class="upload-hint">支持 JPG、PNG、BMP、WebP、TIFF、PDF 格式，可批量上传整个文件夹</p>
                 <p class="upload-limit">单文件最大 50MB | 右键选择文件夹 | 拖拽文件夹/多文件</p>
-                <input type="file" id="file-input" accept="image/jpeg,image/png,image/bmp,image/webp,image/tiff,application/pdf" hidden>
-                <input type="file" id="folder-input" webkitdirectory directory accept="image/jpeg,image/png,image/bmp,image/webp,image/tiff,application/pdf" hidden>
+                <input type="file" id="file-input" name="file" accept="image/jpeg,image/png,image/bmp,image/webp,image/tiff,application/pdf" hidden>
+                <input type="file" id="folder-input" name="folder" webkitdirectory directory accept="image/jpeg,image/png,image/bmp,image/webp,image/tiff,application/pdf" hidden>
             </div>
 
             <!-- 文件队列 -->
@@ -95,7 +100,7 @@
                 <div class="preview-card single-preview">
                     <h3 class="preview-title">当前文件</h3>
                     <div class="preview-image-wrap">
-                        <img id="preview-original" src="" alt="预览">
+                        <img id="preview-original" src="" alt="预览" width="600" height="375">
                     </div>
                 </div>
             </div>
@@ -108,7 +113,7 @@
                 <div class="progress-bar-wrap">
                     <div class="progress-bar" id="progress-bar"></div>
                 </div>
-                <p class="progress-text" id="progress-text">准备中...</p>
+                <p class="progress-text" id="progress-text">准备中…</p>
                 <div class="progress-steps" id="progress-steps">
                     <div class="step" data-step="upload">
                         <span class="step-icon">&#10003;</span>
@@ -180,12 +185,17 @@
             <div class="panel-header">
                 <h2>报告中心</h2>
                 <div class="panel-actions">
+                    <label class="select-all-label">
+                        <input type="checkbox" id="reports-select-all" aria-label="全选报告">
+                        <span>全选</span>
+                    </label>
                     <button class="btn btn-ghost btn-sm" id="btn-refresh-reports">刷新</button>
+                    <button class="btn btn-danger btn-sm" id="btn-batch-delete-reports" disabled>批量删除</button>
                 </div>
             </div>
             <div class="reports-grid" id="reports-grid">
                 <div class="empty-state">
-                    <div class="empty-icon">&#128196;</div>
+                    <div class="empty-icon" aria-hidden="true">&#128196;</div>
                     <p>暂无生成的报告</p>
                 </div>
             </div>
@@ -197,19 +207,19 @@
                 <div class="config-card">
                     <h3>PaddleOCR API 配置</h3>
                     <p class="config-hint" style="color:var(--text-muted);font-size:0.8rem;margin-bottom:12px;">
-                        从 <a href="https://aistudio.baidu.com/paddleocr/task" target="_blank" style="color:var(--accent);">百度AI Studio</a> 获取 API_URL 和 TOKEN | <a href="https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5" target="_blank" style="color:var(--accent);">API文档</a>
+                        从 <a href="https://aistudio.baidu.com/paddleocr/task" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">百度AI Studio</a> 获取 API_URL 和 TOKEN | <a href="https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">API文档</a>
                     </p>
                     <div class="form-group">
-                        <label>API 地址 (API_URL)</label>
-                        <input type="text" id="cfg-api-url" placeholder="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs">
+                        <label for="cfg-api-url">API 地址 (API_URL)</label>
+                        <input type="text" id="cfg-api-url" name="api-url" autocomplete="off" spellcheck="false" placeholder="https://paddleocr.aistudio-app.com/api/v2/ocr/jobs">
                     </div>
                     <div class="form-group">
-                        <label>访问令牌 (TOKEN)</label>
-                        <input type="password" id="cfg-api-key" placeholder="请输入TOKEN">
+                        <label for="cfg-api-key">访问令牌 (TOKEN)</label>
+                        <input type="password" id="cfg-api-key" name="api-key" autocomplete="off" spellcheck="false" placeholder="请输入TOKEN…">
                     </div>
                     <div class="form-group">
-                        <label>模型版本</label>
-                        <select id="cfg-model">
+                        <label for="cfg-model">模型版本</label>
+                        <select id="cfg-model" name="model" autocomplete="off">
                             <option value="PP-StructureV3">PP-StructureV3（文档结构化分析）</option>
                             <option value="PaddleOCR-VL-1.5">PaddleOCR-VL-1.5（文档分析，推荐）</option>
                             <option value="PaddleOCR-VL">PaddleOCR-VL（文档分析）</option>
@@ -226,24 +236,24 @@
                 <div class="config-card">
                     <h3>服务器配置</h3>
                     <div class="form-group">
-                        <label>监听地址</label>
-                        <input type="text" id="cfg-host" value="0.0.0.0">
+                        <label for="cfg-host">监听地址</label>
+                        <input type="text" id="cfg-host" name="host" autocomplete="off" value="127.0.0.1">
                     </div>
                     <div class="form-group">
-                        <label>监听端口</label>
-                        <input type="number" id="cfg-port" value="8500">
+                        <label for="cfg-port">监听端口</label>
+                        <input type="number" id="cfg-port" name="port" autocomplete="off" value="8500">
                     </div>
                     <div class="form-group">
-                        <label>最大上传大小 (MB)</label>
-                        <input type="number" id="cfg-max-size" value="50">
+                        <label for="cfg-max-size">最大上传大小 (MB)</label>
+                        <input type="number" id="cfg-max-size" name="max-size" autocomplete="off" value="50">
                     </div>
                     <div class="form-group">
-                        <label>上传目录</label>
-                        <input type="text" id="cfg-upload-dir" value="./uploads">
+                        <label for="cfg-upload-dir">上传目录</label>
+                        <input type="text" id="cfg-upload-dir" name="upload-dir" autocomplete="off" spellcheck="false" value="./uploads">
                     </div>
                     <div class="form-group">
-                        <label>输出目录</label>
-                        <input type="text" id="cfg-output-dir" value="./output">
+                        <label for="cfg-output-dir">输出目录</label>
+                        <input type="text" id="cfg-output-dir" name="output-dir" autocomplete="off" spellcheck="false" value="./output">
                     </div>
                     <div class="form-group">
                         <button class="btn btn-primary" id="btn-save-server-config">保存服务器配置</button>
@@ -256,8 +266,8 @@
                         PaddleOCR-VL / PP-StructureV3 一步完成版面分析+OCR+表格+公式识别
                     </p>
                     <div class="form-group">
-                        <label>日志级别</label>
-                        <select id="cfg-log-level">
+                        <label for="cfg-log-level">日志级别</label>
+                        <select id="cfg-log-level" name="log-level" autocomplete="off">
                             <option value="DEBUG">DEBUG</option>
                             <option value="INFO" selected>INFO</option>
                             <option value="WARNING">WARNING</option>
@@ -273,7 +283,7 @@
     </main>
 
     <!-- 通知提示 -->
-    <div class="toast-container" id="toast-container"></div>
+    <div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="false"></div>
 
     <script src="app.js"></script>
 </body>

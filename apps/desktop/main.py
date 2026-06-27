@@ -41,12 +41,21 @@ if str(_PROJECT_ROOT) not in sys.path:
 # 导致 API Key 等配置无法加载。
 if not os.environ.get("CLAW_ENV_FILE"):
     if getattr(sys, 'frozen', False):
+        # 打包模式：使用 exe 同级目录的 .env
+        _data_dir = os.path.dirname(sys.executable)
+        os.environ["CLAW_ENV_FILE"] = os.path.join(_data_dir, ".env")
+    else:
+        # 开发模式：使用源码 .env（直接继承开发环境配置）
+        _source_env = str(_PROJECT_ROOT / "apps" / "web" / "api" / ".env")
+        os.environ["CLAW_ENV_FILE"] = _source_env
+
+if not os.environ.get("CLAW_DATA_DIR"):
+    if getattr(sys, 'frozen', False):
         _data_dir = os.path.dirname(sys.executable)
     else:
         _appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
         _data_dir = os.path.join(_appdata, "Claw")
     os.makedirs(_data_dir, exist_ok=True)
-    os.environ["CLAW_ENV_FILE"] = os.path.join(_data_dir, ".env")
     os.environ["CLAW_DATA_DIR"] = _data_dir
 
 from typing import List, Dict
@@ -84,7 +93,9 @@ class StandaloneApp(
 
     def __init__(self):
         QMainWindow.__init__(self)
-        self.api_base = "http://127.0.0.1:8500"
+        # api_base 从 settings 动态读取，与配置页保持一致
+        from apps.web.api.config import settings as _settings
+        self.api_base = f"http://127.0.0.1:{_settings.port}"
         self.file_queue: List[Dict] = []           # [{path, name, size, status, file_id, task_id, result}]
         self.batch_results: List[Dict] = []        # 批量处理结果
         self.processing = False
@@ -244,11 +255,15 @@ def _do_main():
 
     # --- 启动内嵌后端服务 ---
     print("[Claw] 正在启动内嵌后端服务...", flush=True)
-    if not backend_server.start_server(host="127.0.0.1", port=8500):
+    # 从 settings 读取 host/port（与配置页保存的值一致）
+    from apps.web.api.config import settings as _settings
+    _server_host = _settings.host
+    _server_port = _settings.port
+    if not backend_server.start_server(host=_server_host, port=_server_port):
         QMessageBox.critical(
             None, "启动失败",
-            "内嵌后端服务启动超时，请检查以下可能原因：\n"
-            "1. 端口 8500 被其他程序占用\n"
+            f"内嵌后端服务启动超时，请检查以下可能原因：\n"
+            f"1. 端口 {_server_port} 被其他程序占用\n"
             "2. 缺少必要的依赖 (uvicorn, fastapi 等)\n"
             "3. 配置文件 .env 读写权限异常"
         )

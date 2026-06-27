@@ -488,6 +488,76 @@ class TestReportsAPI:
         resp = api_client.delete("/api/report/nonexistent_id")
         assert resp.status_code == 404
 
+    def test_batch_delete_reports_empty(self, api_client):
+        """批量删除：空列表应返回400"""
+        resp = api_client.post("/api/reports/batch-delete", json={"ids": []})
+        assert resp.status_code == 400
+
+    def test_batch_delete_reports_no_ids(self, api_client):
+        """批量删除：缺少ids字段应返回400"""
+        resp = api_client.post("/api/reports/batch-delete", json={})
+        assert resp.status_code == 400
+
+    def test_batch_delete_reports_path_traversal(self, api_client):
+        """批量删除：路径遍历ID应被过滤"""
+        resp = api_client.post("/api/reports/batch-delete", json={"ids": ["../../etc/passwd", "../test"]})
+        # 所有ID都无效，返回400
+        assert resp.status_code == 400
+
+    def test_batch_delete_nonexistent_reports(self, api_client):
+        """批量删除不存在的报告"""
+        resp = api_client.post("/api/reports/batch-delete", json={"ids": ["nonexist1", "nonexist2"]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["deleted"] == 0
+        assert data["failed"] == 2
+        assert len(data["results"]) == 2
+
+    def test_batch_delete_existing_reports(self, api_client, sample_image_bytes):
+        """批量删除存在的报告（并行删除）"""
+        # 先创建几个报告目录
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "batch_del_test",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        output_dir = backend.settings.output_dir
+        if not Path(output_dir).is_absolute():
+            output_dir = str(Path(__file__).parent.parent / "apps" / "web" / "api" / output_dir)
+
+        # 创建3个测试报告目录
+        test_ids = ["test_batch_001", "test_batch_002", "test_batch_003"]
+        for rid in test_ids:
+            report_dir = Path(output_dir) / rid
+            report_dir.mkdir(parents=True, exist_ok=True)
+            (report_dir / "report.md").write_text("# test")
+            (report_dir / "original.png").write_bytes(sample_image_bytes)
+
+        try:
+            resp = api_client.post("/api/reports/batch-delete", json={"ids": test_ids})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is True
+            assert data["total"] == 3
+            assert data["deleted"] == 3
+            assert data["failed"] == 0
+
+            # 验证目录已被删除
+            for rid in test_ids:
+                assert not (Path(output_dir) / rid).exists()
+        finally:
+            # 清理
+            for rid in test_ids:
+                d = Path(output_dir) / rid
+                if d.exists():
+                    import shutil
+                    shutil.rmtree(d)
+
 
 # ──────────────────────────────────────────────────
 # 8. 完整端到端业务流程

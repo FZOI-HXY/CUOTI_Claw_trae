@@ -58,15 +58,27 @@ def _setup_environment(data_dir: str):
 
     这些环境变量会在 Settings 初始化时被 pydantic-settings 读取，
     覆盖默认的相对路径，指向便携数据目录（exe 同级）或 AppData。
-    """
-    # .env 文件路径
-    env_file = os.path.join(data_dir, ".env")
-    if not os.environ.get("CLAW_ENV_FILE"):
-        os.environ["CLAW_ENV_FILE"] = env_file
 
+    配置文件 (.env) 路径策略：
+      - 打包模式：使用 exe 同级目录的 .env（便携模式）
+      - 开发模式：使用源码目录 apps/web/api/.env（直接继承开发环境配置，
+        修改源码 .env 立即生效，无需复制到 %APPDATA%）
+    """
     # 数据根目录（config.py 中的 _resolve_path 会用到）
+    # 数据库、上传文件等运行时数据仍存储在 data_dir
     if not os.environ.get("CLAW_DATA_DIR"):
         os.environ["CLAW_DATA_DIR"] = data_dir
+
+    # .env 文件路径：开发模式用源码 .env，打包模式用 exe 同级 .env
+    if not os.environ.get("CLAW_ENV_FILE"):
+        if getattr(sys, 'frozen', False):
+            # 打包模式：使用 exe 同级目录的 .env
+            env_file = os.path.join(data_dir, ".env")
+        else:
+            # 开发模式：使用源码 .env，直接继承开发环境配置
+            project_root = _get_project_root()
+            env_file = os.path.join(project_root, "apps", "web", "api", ".env")
+        os.environ["CLAW_ENV_FILE"] = env_file
 
     # PyInstaller 打包后 certifi 的 CA bundle 路径需要显式设置，
     # 否则 httpx 发起 HTTPS 请求时因找不到证书而挂起。
@@ -99,14 +111,34 @@ def _read_env_key(env_path: str) -> str:
 def _ensure_env_file(data_dir: str):
     """确保 .env 文件存在且有 API Key
 
+    开发模式：直接使用源码 apps/web/api/.env，无需复制（_setup_environment 已设置路径）。
     frozen 模式下，如果 exe 同级 .env 不存在或 key 为空，
     会尝试从开发模式数据目录（%APPDATA%/Claw/.env）继承配置。
     """
+    # 开发模式：.env 就是源码文件，无需复制或创建
+    if not getattr(sys, 'frozen', False):
+        project_root = _get_project_root()
+        source_env = os.path.join(project_root, "apps", "web", "api", ".env")
+        if os.path.exists(source_env):
+            return  # 源码 .env 存在，直接使用
+        # 源码 .env 不存在（异常情况），创建默认
+        os.makedirs(os.path.dirname(source_env), exist_ok=True)
+        with open(source_env, "w", encoding="utf-8") as f:
+            f.write("# Claw 错题管理系统 配置文件\n")
+            f.write('PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs\n')
+            f.write('PADDLEOCR_API_KEY=\n')
+            f.write('PADDLEOCR_MODEL=PP-OCRv5\n')
+            f.write('HOST=127.0.0.1\n')
+            f.write('PORT=8500\n')
+            f.write('DEBUG=false\n')
+        return
+
+    # 以下为 frozen 模式逻辑
     env_path = os.path.join(data_dir, ".env")
 
     # .env 不存在 → 创建或从模板复制
     if not os.path.exists(env_path):
-        # 1. 尝试从源码目录复制
+        # 1. 尝试从 _MEIPASS 内置模板复制
         project_root = _get_project_root()
         template = os.path.join(project_root, "apps", "web", "api", ".env")
         if os.path.exists(template) and template != env_path:
@@ -114,13 +146,12 @@ def _ensure_env_file(data_dir: str):
             return
 
         # 2. 尝试从开发模式数据目录复制（frozen 模式继承开发配置）
-        if getattr(sys, 'frozen', False) and sys.platform == "win32":
-            appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-            dev_env = os.path.join(appdata, "Claw", ".env")
-            if os.path.exists(dev_env) and dev_env != env_path:
-                shutil.copy(dev_env, env_path)
-                print("[backend_server] 已从开发配置继承 .env", flush=True)
-                return
+        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+        dev_env = os.path.join(appdata, "Claw", ".env")
+        if os.path.exists(dev_env) and dev_env != env_path:
+            shutil.copy(dev_env, env_path)
+            print("[backend_server] 已从开发配置继承 .env", flush=True)
+            return
 
         # 3. 创建默认 .env（key 为空，需用户手动配置）
         with open(env_path, "w", encoding="utf-8") as f:
@@ -130,6 +161,9 @@ def _ensure_env_file(data_dir: str):
             f.write('PADDLEOCR_API_KEY=\n')
             f.write('PADDLEOCR_MODEL=PP-StructureV3\n')
             f.write('PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs\n')
+            f.write('HOST=127.0.0.1\n')
+            f.write('PORT=8500\n')
+            f.write('DEBUG=false\n')
         return
 
     # .env 存在 → 检查 API Key 是否为空
@@ -138,14 +172,13 @@ def _ensure_env_file(data_dir: str):
         return  # 已有 key，无需处理
 
     # key 为空 → 尝试从开发模式数据目录继承
-    if getattr(sys, 'frozen', False) and sys.platform == "win32":
-        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-        dev_env = os.path.join(appdata, "Claw", ".env")
-        if os.path.exists(dev_env) and dev_env != env_path:
-            dev_key = _read_env_key(dev_env)
-            if dev_key:
-                shutil.copy(dev_env, env_path)
-                print("[backend_server] 已从开发配置继承 API Key", flush=True)
+    appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+    dev_env = os.path.join(appdata, "Claw", ".env")
+    if os.path.exists(dev_env) and dev_env != env_path:
+        dev_key = _read_env_key(dev_env)
+        if dev_key:
+            shutil.copy(dev_env, env_path)
+            print("[backend_server] 已从开发配置继承 API Key", flush=True)
 
 
 # ---- 服务器生命周期 ----

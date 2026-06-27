@@ -6,6 +6,7 @@
 
 /* --- CSS 变量 --- */
 :root {
+    color-scheme: dark;
     --bg-deep: #0a0e17;
     --bg-surface: #111827;
     --bg-elevated: #1a2235;
@@ -119,6 +120,7 @@ body {
     font-weight: 700;
     letter-spacing: -0.02em;
     color: var(--text-primary);
+    text-wrap: balance;
 }
 
 .brand-subtitle {
@@ -147,7 +149,7 @@ body {
     font-size: 0.875rem;
     font-family: var(--font-sans);
     cursor: pointer;
-    transition: all var(--transition-fast);
+    transition: color var(--transition-fast), background var(--transition-fast);
     position: relative;
 }
 
@@ -239,7 +241,7 @@ body {
     padding: 60px 40px;
     text-align: center;
     cursor: pointer;
-    transition: all var(--transition-base);
+    transition: border-color var(--transition-base), background var(--transition-base), box-shadow var(--transition-base);
     background: var(--bg-surface);
     position: relative;
     overflow: hidden;
@@ -527,6 +529,7 @@ body {
     font-size: 0.8rem;
     color: var(--text-muted);
     font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
     min-width: 50px;
 }
 
@@ -607,7 +610,7 @@ body {
     gap: 6px;
     flex: 1;
     opacity: 0.4;
-    transition: all var(--transition-base);
+    transition: opacity var(--transition-base), color var(--transition-base);
 }
 
 .step.active {
@@ -681,6 +684,7 @@ body {
     font-weight: 700;
     color: var(--accent);
     font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
 }
 
 .stat-label {
@@ -855,7 +859,7 @@ body {
     font-family: var(--font-sans);
     font-weight: 500;
     cursor: pointer;
-    transition: all var(--transition-fast);
+    transition: background var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
 }
 
 .btn:active {
@@ -898,6 +902,54 @@ body {
     font-size: 0.8rem;
 }
 
+.btn-danger {
+    background: linear-gradient(135deg, #dc2626, #b91c1c);
+    color: white;
+    border: none;
+}
+
+.btn-danger:hover {
+    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.4);
+    transform: translateY(-1px);
+}
+
+.btn-danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.select-all-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    margin-right: 8px;
+    user-select: none;
+}
+
+.select-all-label input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: var(--accent);
+}
+
+.report-select-label {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    margin-right: 8px;
+}
+
+.report-select-cb {
+    cursor: pointer;
+    accent-color: var(--accent);
+    width: 16px;
+    height: 16px;
+}
+
 /* --- 历史记录表格 --- */
 .panel-header {
     display: flex;
@@ -909,6 +961,7 @@ body {
 .panel-header h2 {
     font-size: 1.25rem;
     font-weight: 600;
+    text-wrap: balance;
 }
 
 .history-table-wrap {
@@ -953,7 +1006,7 @@ body {
 .empty-row, .empty-state {
     text-align: center;
     color: var(--text-muted);
-    padding: 48px 16px !important;
+    padding: 48px 16px;
 }
 
 .badge {
@@ -986,7 +1039,7 @@ body {
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     padding: 20px;
-    transition: all var(--transition-fast);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
     cursor: pointer;
 }
 
@@ -1066,17 +1119,19 @@ body {
     width: 100%;
     padding: 10px 14px;
     background: var(--bg-elevated);
+    background-color: var(--bg-elevated);
+    color: var(--text-primary);
     border: 1px solid var(--border-medium);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
     font-size: 0.875rem;
     font-family: var(--font-sans);
-    transition: all var(--transition-fast);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
     outline: none;
 }
 
-.form-group input:focus,
-.form-group select:focus {
+.form-group input:focus-visible,
+.form-group select:focus-visible {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-glow);
 }
@@ -1215,4 +1270,59 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
+}
+
+/* --- Skip Link --- */
+.skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0;
+    background: var(--accent);
+    color: var(--bg-deep);
+    padding: 8px 16px;
+    border-radius: 0 0 var(--radius-sm) 0;
+    font-size: 0.875rem;
+    font-weight: 600;
+    z-index: 1000;
+    text-decoration: none;
+    transition: top var(--transition-fast);
+}
+
+.skip-link:focus-visible {
+    top: 0;
+}
+
+/* --- 触摸优化 --- */
+button, .nav-btn, .btn, .upload-zone, .report-card, a {
+    touch-action: manipulation;
+}
+
+html {
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* --- Reduced Motion --- */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+
+    .logo-icon {
+        animation: none !important;
+    }
+
+    .progress-bar {
+        animation: none !important;
+    }
+
+    .step.active .step-icon {
+        animation: none !important;
+    }
+
+    #particles-canvas {
+        display: none;
+    }
 }

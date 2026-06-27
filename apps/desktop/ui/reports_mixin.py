@@ -317,24 +317,30 @@ class ReportsTabMixin:
             return
 
         total = len(report_ids)
-        self.show_toast(f"正在删除 {total} 个报告...")
+        self.show_toast(f"正在删除 {total} 个报告…")
 
-        # 串联删除：一次删除一个，全部完成后刷新列表
-        # 避免多个 worker 并发完成时线程清理竞态导致崩溃
-        remaining = list(report_ids)
+        # 使用批量删除 API（后端并行执行，大幅提升速度）
+        worker = ApiTask(
+            self.api_base,
+            "POST",
+            "/api/reports/batch-delete",
+            json_data={"ids": report_ids},
+        )
 
-        def _delete_next():
-            if not remaining:
-                self.show_toast(f"已删除 {total} 个报告")
-                self.load_reports()
-                return
-            rid = remaining.pop(0)
-            worker = ApiTask(self.api_base, "DELETE", f"/api/report/{rid}")
-            worker.finished.connect(lambda d: _delete_next())
-            worker.error.connect(lambda e: (
-                self.show_toast(f"删除报告 {rid} 失败: {e}"),
-                _delete_next(),
-            ))
-            worker.start()
+        def _on_done(data):
+            deleted = data.get("deleted", 0)
+            failed = data.get("failed", 0)
+            if failed > 0:
+                self.show_toast(f"已删除 {deleted} 个，失败 {failed} 个")
+            else:
+                self.show_toast(f"已删除 {deleted} 个报告")
+            self._selected_report_ids.clear()
+            self.load_reports()
 
-        _delete_next()
+        def _on_error(e):
+            self.show_toast(f"批量删除失败: {e}")
+            self.load_reports()
+
+        worker.finished.connect(_on_done)
+        worker.error.connect(_on_error)
+        worker.start()
