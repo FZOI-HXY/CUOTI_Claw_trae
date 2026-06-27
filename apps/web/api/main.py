@@ -185,6 +185,8 @@ def _safe_report_dir(report_id: str) -> Path:
     将用户传入的 report_id 解析为 output_dir 下的绝对路径，
     并验证解析后的路径严格位于 output_dir 子树内。
     """
+    if not report_id:
+        raise HTTPException(status_code=400, detail="无效的报告 ID")
     output_dir = settings.get_output_path().resolve()
     report_dir = (output_dir / report_id).resolve()
     # 确保解析后路径仍在 output_dir 内
@@ -1041,12 +1043,12 @@ async def download_batch_zip(request_data: dict):
     if not report_ids:
         raise HTTPException(status_code=400, detail="未提供报告ID列表")
 
-    output_root = settings.get_output_path()
     zip_buffer = io.BytesIO()
     image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for report_id in report_ids:
-            report_dir = output_root / report_id
+            # 使用 _safe_report_dir 防止路径穿越攻击
+            report_dir = _safe_report_dir(report_id)
             if not report_dir.exists():
                 logger.warning(f"批量下载: 报告目录不存在 {report_id}")
                 continue
@@ -1192,6 +1194,56 @@ async def delete_report(report_id: str):
         logger.error(f"删除报告失败: {e}")
         error_detail = str(e) if settings.debug else "删除报告失败"
         raise HTTPException(status_code=500, detail=error_detail)
+
+
+@app.post("/api/reports/batch-delete")
+async def batch_delete_reports(body: dict[str, list[str]]):
+    """批量删除报告（并行执行）"""
+    report_ids = body.get("ids", [])
+    if not report_ids:
+        raise HTTPException(status_code=400, detail="未提供要删除的报告 ID")
+
+    # 安全校验：过滤掉路径遍历的 ID
+    safe_ids = []
+    for rid in report_ids:
+        try:
+            _safe_report_dir(rid)
+            safe_ids.append(rid)
+        except Exception:
+            continue
+
+    if not safe_ids:
+        raise HTTPException(status_code=400, detail="没有有效的报告 ID")
+
+    async def _delete_one(rid: str) -> dict:
+        report_dir = _safe_report_dir(rid)
+        if not report_dir.exists():
+            return {"id": rid, "success": False, "error": "报告不存在"}
+        try:
+            # 线程池中执行阻塞的文件删除操作
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda d=report_dir: shutil.rmtree(d)
+            )
+            logger.info(f"报告已删除: {rid}")
+            return {"id": rid, "success": True}
+        except Exception as e:
+            logger.error(f"删除报告失败 [{rid}]: {e}")
+            error_msg = str(e) if settings.debug else "删除失败"
+            return {"id": rid, "success": False, "error": error_msg}
+
+    # 并行执行删除
+    results = await asyncio.gather(*[_delete_one(rid) for rid in safe_ids])
+    deleted_count = sum(1 for r in results if r["success"])
+    failed_count = len(results) - deleted_count
+
+    return {
+        "success": True,
+        "total": len(safe_ids),
+        "deleted": deleted_count,
+        "failed": failed_count,
+        "results": results,
+        "message": f"已删除 {deleted_count} 个报告，失败 {failed_count} 个"
+    }
 
 
 # ============ 静态文件服务 ============

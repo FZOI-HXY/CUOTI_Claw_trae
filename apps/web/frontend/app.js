@@ -51,8 +51,9 @@
     // ============ 工具函数 ============
     function formatFileSize(bytes) {
         if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        const formatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 });
+        if (bytes < 1024 * 1024) return formatter.format(bytes / 1024) + ' KB';
+        return formatter.format(bytes / (1024 * 1024)) + ' MB';
     }
 
     function formatTime(iso) {
@@ -79,6 +80,10 @@
 
     // ============ 粒子背景 ============
     function initParticles() {
+        // 检测 prefers-reduced-motion
+        const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+        if (prefersReducedMotion.matches) return; // 用户偏好减少动画，不启动粒子
+
         const canvas = $('#particles-canvas');
         const ctx = canvas.getContext('2d');
         let particles = [];
@@ -139,7 +144,12 @@
         resize();
         createParticles();
         animate();
-        window.addEventListener('resize', () => { resize(); createParticles(); });
+        // debounce resize 事件
+        let resizeTimer;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => { resize(); createParticles(); }, 200);
+        });
     }
 
     // ============ 视图切换 ============
@@ -232,8 +242,8 @@
             const statusClass = `queue-status-${item.status}`;
             const statusText = {
                 'pending': '等待中',
-                'uploading': '上传中...',
-                'processing': '识别中...',
+                'uploading': '上传中…',
+                'processing': '识别中…',
                 'done': '完成',
                 'error': '失败',
             }[item.status] || '';
@@ -285,6 +295,15 @@
     // ============ 上传区域事件 ============
     dom.uploadZone.addEventListener('click', () => {
         if (!state.processing) dom.fileInput.click();
+    });
+
+    // 键盘访问：Enter/Space 触发上传
+    dom.uploadZone.addEventListener('keydown', (e) => {
+        if (state.processing) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            dom.fileInput.click();
+        }
     });
 
     // 右键点击打开文件夹选择
@@ -432,7 +451,7 @@
         const total = state.fileQueue.length;
 
         // ====== 阶段1: 批量上传全部文件 ======
-        updateBatchProgress(0, total, '批量上传中...');
+        updateBatchProgress(0, total, '批量上传中…');
 
         for (let i = 0; i < state.fileQueue.length; i++) {
             const item = state.fileQueue[i];
@@ -455,7 +474,7 @@
         const pendingItems = state.fileQueue.filter(item => item.status === 'uploaded');
         const pendingTotal = pendingItems.length;
 
-        updateBatchProgress(0, total, `提交 ${pendingTotal} 个任务...`);
+        updateBatchProgress(0, total, `提交 ${pendingTotal} 个任务…`);
 
         // 并发提交所有任务，获取 taskId
         const submitResults = await Promise.allSettled(
@@ -501,7 +520,7 @@
         }
 
         // ====== 阶段3: 轮询直到所有任务完成 ======
-        updateBatchProgress(0, total, `轮询 ${processingItems.length} 个任务...`);
+        updateBatchProgress(0, total, `轮询 ${processingItems.length} 个任务…`);
 
         let allDone = false;
         let pollCount = 0;
@@ -579,7 +598,7 @@
         setStepActive('report');
 
         // ====== 阶段4: 生成结果（按原始队列顺序） ======
-        updateBatchProgress(total, total, '生成报告中...');
+        updateBatchProgress(total, total, '生成报告中…');
         dom.progressBar.style.width = '100%';
 
         let succeeded = 0;
@@ -727,7 +746,7 @@
                 ${state.batchResults.map((r, idx) => `
                     <div class="batch-result-item ${r.success ? 'result-success' : 'result-error'}">
                         <span class="batch-result-index">#${idx + 1}</span>
-                        <span class="batch-result-name" title="${escapeHtml(r.name)}">${escapeHtml(r.name.length > 40 ? r.name.slice(0, 40) + '...' : r.name)}</span>
+                        <span class="batch-result-name" title="${escapeHtml(r.name)}">${escapeHtml(r.name.length > 40 ? r.name.slice(0, 40) + '…' : r.name)}</span>
                         <span class="batch-result-status">${r.success ? '\u2705 成功' : '\u274C 失败'}</span>
                         ${r.success ? `<span class="batch-result-time">${r.processingTime}s</span>` : ''}
                         <button class="btn btn-ghost btn-sm view-file-result-btn" data-file-id="${escapeHtml(String(r.fileId || ''))}" data-name="${escapeHtml(r.name)}">查看</button>
@@ -822,7 +841,7 @@
             if (window.MathJax && window.MathJax.typesetClear) {
                 window.MathJax.typesetClear([dom.mdContent]);
             }
-            // 从 report_dir 提取 report_id（如 "c:\...\20260609_112608" → "20260609_112608"）
+            // 从 report_dir 提取 report_id（如 "c:\…\20260609_112608" → "20260609_112608"）
             const reportId = data.report_dir ? data.report_dir.split(/[\\/]/).pop() : null;
             dom.mdContent.innerHTML = renderMarkdown(data.markdown_text, reportId);
             if (window.MathJax && window.MathJax.typesetPromise) {
@@ -867,10 +886,10 @@
         let html = sanitized
             // 先处理 HTML img 标签（PP-StructureV3 输出中可能包含）
             .replace(/<img\s+src="([^"]+)"(?:\s+alt="([^"]*)")?[^>]*\/?>/gi,
-                (match, src, alt) => `<img src="${resolveImagePath(src)}" alt="${alt || ''}">`)
+                (match, src, alt) => `<img src="${resolveImagePath(src)}" alt="${alt || ''}" width="100%">`)
             // Markdown 图片 ![alt](src)
             .replace(/!\[([^\]]*)\]\(([^)]+)\)/g,
-                (match, alt, src) => `<img src="${resolveImagePath(src)}" alt="${alt || ''}">`)
+                (match, alt, src) => `<img src="${resolveImagePath(src)}" alt="${alt || ''}" width="100%">`)
             .replace(/^### (.+)$/gm, '<h3>$1</h3>')
             .replace(/^## (.+)$/gm, '<h2>$1</h2>')
             .replace(/^# (.+)$/gm, '<h1>$1</h1>')
@@ -883,7 +902,7 @@
                 const cells = match.split('|').filter(c => c.trim());
                 const isHeader = match.includes('---');
                 if (isHeader) return '';
-                return '<tr>' + cells.map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
+                return '<tr>' + cells.map(c => `<td>${escapeHtml(c.trim())}</td>`).join('') + '</tr>';
             })
             .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
             .replace(/^---$/gm, '<hr>');
@@ -1032,7 +1051,7 @@
             dom.historyTbody.innerHTML = data.items.map(item => `
                 <tr>
                     <td><span class="report-id">#${escapeHtml(item.id)}</span></td>
-                    <td title="${escapeHtml(item.filename)}">${escapeHtml(item.filename.length > 25 ? item.filename.slice(0, 25) + '...' : item.filename)}</td>
+                    <td title="${escapeHtml(item.filename)}">${escapeHtml(item.filename.length > 25 ? item.filename.slice(0, 25) + '…' : item.filename)}</td>
                     <td>${formatTime(item.timestamp)}</td>
                     <td>
                         <span class="badge ${item.success ? 'badge-success' : 'badge-error'}">
@@ -1057,6 +1076,22 @@
     }
 
     // ============ 报告中心 ============
+    const selectedReportIds = new Set();
+
+    function _refreshBatchDeleteBtn() {
+        const btn = $('#btn-batch-delete-reports');
+        if (btn) {
+            const count = selectedReportIds.size;
+            btn.disabled = count === 0;
+            btn.textContent = count > 0 ? `批量删除 (${count})` : '批量删除';
+        }
+        const cb = $('#reports-select-all');
+        if (cb) {
+            const total = document.querySelectorAll('.report-card').length;
+            cb.checked = total > 0 && count === total;
+        }
+    }
+
     async function loadReports() {
         try {
             const res = await fetch(`${API_BASE}/api/reports?limit=50`);
@@ -1065,15 +1100,21 @@
             if (data.reports.length === 0) {
                 dom.reportsGrid.innerHTML = `
                     <div class="empty-state">
-                        <div class="empty-icon">&#128196;</div>
+                        <div class="empty-icon" aria-hidden="true">&#128196;</div>
                         <p>暂无生成的报告</p>
                     </div>`;
+                selectedReportIds.clear();
+                _refreshBatchDeleteBtn();
                 return;
             }
 
             dom.reportsGrid.innerHTML = data.reports.map(r => `
                 <div class="report-card" data-report-id="${escapeHtml(r.id)}">
                     <div class="report-card-header">
+                        <label class="report-select-label" aria-label="选择报告 ${escapeHtml(r.id)}">
+                            <input type="checkbox" class="report-select-cb" data-report-id="${escapeHtml(r.id)}"
+                                ${selectedReportIds.has(r.id) ? 'checked' : ''}>
+                        </label>
                         <span class="report-id">#${escapeHtml(r.id)}</span>
                         <span class="report-date">${formatTime(r.created_time)}</span>
                     </div>
@@ -1085,6 +1126,8 @@
                 </div>
             `).join('');
 
+            _refreshBatchDeleteBtn();
+
         } catch (error) {
             console.error('加载报告列表失败:', error);
         }
@@ -1095,6 +1138,67 @@
         const reportBtn = e.target.closest('.view-report-btn');
         const downloadBtn = e.target.closest('.download-report-btn');
         const deleteBtn = e.target.closest('.delete-report-btn');
+        const selectCb = e.target.closest('.report-select-cb');
+        const selectAllCb = e.target.closest('#reports-select-all');
+        const batchDelBtn = e.target.closest('#btn-batch-delete-reports');
+
+        if (selectCb) {
+            const rid = selectCb.dataset.reportId;
+            if (selectCb.checked) {
+                selectedReportIds.add(rid);
+            } else {
+                selectedReportIds.delete(rid);
+            }
+            _refreshBatchDeleteBtn();
+            return;
+        }
+
+        if (selectAllCb) {
+            const allCbs = document.querySelectorAll('.report-select-cb');
+            if (selectAllCb.checked) {
+                allCbs.forEach(cb => {
+                    selectedReportIds.add(cb.dataset.reportId);
+                    cb.checked = true;
+                });
+            } else {
+                allCbs.forEach(cb => {
+                    selectedReportIds.delete(cb.dataset.reportId);
+                    cb.checked = false;
+                });
+            }
+            _refreshBatchDeleteBtn();
+            return;
+        }
+
+        if (batchDelBtn) {
+            if (selectedReportIds.size === 0) return;
+            const ids = Array.from(selectedReportIds);
+            const confirmMsg = `确认删除选中的 ${ids.length} 个报告？\n\n`
+                + ids.slice(0, 5).map(id => `  - ${id}`).join('\n')
+                + (ids.length > 5 ? `\n  … 等 ${ids.length} 项` : '')
+                + '\n\n此操作不可撤销。';
+            if (!confirm(confirmMsg)) return;
+
+            try {
+                toast('正在批量删除…', 'info');
+                const res = await fetch(`${API_BASE}/api/reports/batch-delete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    toast(`已删除 ${data.deleted} 个报告${data.failed > 0 ? `，失败 ${data.failed} 个` : ''}`, 'success');
+                    selectedReportIds.clear();
+                    loadReports();
+                } else {
+                    toast('批量删除失败', 'error');
+                }
+            } catch (error) {
+                toast('批量删除失败', 'error');
+            }
+            return;
+        }
 
         if (reportBtn) {
             const reportId = reportBtn.dataset.reportId;
@@ -1176,7 +1280,7 @@
             const config = await res.json();
 
             $('#cfg-api-url').value = config.paddleocr_api_url || '';
-            $('#cfg-host').value = config.host || '0.0.0.0';
+            $('#cfg-host').value = config.host || '127.0.0.1';
             $('#cfg-port').value = config.port || 8500;
             $('#cfg-model').value = config.paddleocr_model || 'PP-StructureV3';
             $('#cfg-max-size').value = config.max_upload_size_mb || 50;
@@ -1243,7 +1347,7 @@
     }
 
     async function testApiConnection() {
-        toast('正在测试API连接...', 'info');
+        toast('正在测试API连接…', 'info');
         try {
             const res = await fetch(`${API_BASE}/api/health`);
             const data = await res.json();
@@ -1289,6 +1393,15 @@
         initParticles();
         checkServerStatus();
         setInterval(checkServerStatus, 30000);
+
+        // 处理中离开页面时警告
+        window.addEventListener('beforeunload', (e) => {
+            if (state.processing) {
+                e.preventDefault();
+                e.returnValue = '正在处理文件，确定要离开吗？';
+                return e.returnValue;
+            }
+        });
 
         if (state.currentView === 'history') loadHistory();
         if (state.currentView === 'reports') loadReports();
