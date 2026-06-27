@@ -4,7 +4,16 @@ Standalone 工具函数
 - 文件大小格式化
 """
 import re
+from html import escape as _html_escape
 from pathlib import Path
+
+
+def _escape_text(text: str) -> str:
+    """对纯文本进行 HTML 转义，防止 XSS。
+
+    转义 & < > " ' 五个字符，防止恶意 HTML/JS 注入。
+    """
+    return _html_escape(text, quote=True)
 
 
 def render_markdown_html(md: str, report_dir: str = "", api_base: str = "") -> str:
@@ -50,41 +59,64 @@ def render_markdown_html(md: str, report_dir: str = "", api_base: str = "") -> s
     img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
     </style>
     """
-    html = md
-    # ---- 图片语法: ![alt](path) → <img> 标签 ----
+
+    # ---- 第一阶段：提取需要保护的块（代码块、图片），用占位符替换 ----
+    placeholders: list[str] = []
+
+    def _make_placeholder(html_content: str) -> str:
+        """生成唯一占位符并保存对应的 HTML 内容"""
+        idx = len(placeholders)
+        placeholders.append(html_content)
+        return f"\x00PH{idx}\x00"
+
+    # 提取代码块 ```json ... ``` （内容不需要转义，保持原样展示）
+    def _extract_codeblock(match):
+        code = match.group(1)
+        # 代码块内容做 HTML 转义（保留显示原样，但防止注入）
+        return _make_placeholder(f"<pre><code>{_escape_text(code)}</code></pre>")
+    md = re.sub(r'```json\n([\s\S]*?)```', _extract_codeblock, md)
+
+    # 提取图片语法: ![alt](path) → 生成 <img> 标签（alt 和路径需转义）
     def _resolve_img(match):
-        alt = match.group(1) or "image"
+        alt = _escape_text(match.group(1) or "image")
         img_path = match.group(2)
         # 跳过已有协议的 URL
         if img_path.startswith(("http://", "https://", "data:", "file://")):
-            return f'<img src="{img_path}" alt="{alt}" width="34%" />'
+            safe_src = _escape_text(img_path)
+            return _make_placeholder(f'<img src="{safe_src}" alt="{alt}" width="34%" />')
         # 优先用 report_dir 解析为本地 file:// 路径
         if report_dir:
             full = (Path(report_dir) / img_path).resolve()
             if full.exists():
                 # 用 as_uri() 生成跨平台兼容的 file:// URL（Windows 下自动转换反斜杠）
-                return f'<img src="{full.as_uri()}" alt="{alt}" width="34%" />'
+                safe_src = _escape_text(full.as_uri())
+                return _make_placeholder(f'<img src="{safe_src}" alt="{alt}" width="34%" />')
         # 其次尝试通过 API 获取（需要 report_id）
         if api_base and report_dir:
             from pathlib import PurePath
             report_id = PurePath(report_dir).name
             api_url = f"{api_base.rstrip('/')}/api/report/{report_id}/image/{img_path}"
-            return f'<img src="{api_url}" alt="{alt}" width="34%" />'
+            safe_src = _escape_text(api_url)
+            return _make_placeholder(f'<img src="{safe_src}" alt="{alt}" width="34%" />')
         # 都不行就保留原样，显示 alt 文本
-        return f'<div style="color:#f87171;padding:4px 0;">[图片: {alt} - {img_path}]</div>'
-    html = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', _resolve_img, html)
-    # 基本转换
+        safe_path = _escape_text(img_path)
+        return _make_placeholder(f'<div style="color:#f87171;padding:4px 0;">[图片: {alt} - {safe_path}]</div>')
+    md = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', _resolve_img, md)
+
+    # ---- 第二阶段：对剩余文本进行 HTML 转义 ----
+    html = _escape_text(md)
+
+    # ---- 第三阶段：Markdown 标记转换（此时文本已转义，安全） ----
     html = re.sub(r'^### (.+)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)
     html = re.sub(r'^## (.+)$', r'<h2>\1</h2>', html, flags=re.MULTILINE)
     html = re.sub(r'^# (.+)$', r'<h1>\1</h1>', html, flags=re.MULTILINE)
     html = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', html)
     html = re.sub(r'\*(.+?)\*', r'<em>\1</em>', html)
-    html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
-    html = re.sub(r'```json\n([\s\S]*?)```', r'<pre><code>\1</code></pre>', html)
-    html = re.sub(r'^> (.+)$', r'<blockquote>\1</blockquote>', html, flags=re.MULTILINE)
+    html = re.sub(r'`([^`]+)`', lambda m: f'<code>{_escape_text(m.group(1))}</code>', html)
+    html = re.sub(r'^&gt; (.+)$', r'<blockquote>\1</blockquote>', html, flags=re.MULTILINE)
     html = re.sub(r'^- (.+)$', r'<li>\1</li>', html, flags=re.MULTILINE)
     html = re.sub(r'^---$', r'<hr>', html, flags=re.MULTILINE)
-    # 表格行
+    # 表格行（转义后 | 仍是 |，单元格内容已转义）
     html = re.sub(
         r'^\|(.+)\|$',
         lambda m: '<tr>' + ''.join(
@@ -93,6 +125,15 @@ def render_markdown_html(md: str, report_dir: str = "", api_base: str = "") -> s
         ) + '</tr>',
         html, flags=re.MULTILINE
     )
+
+    # ---- 第四阶段：还原占位符（代码块、图片） ----
+    def _restore_placeholder(match):
+        idx = int(match.group(1))
+        if 0 <= idx < len(placeholders):
+            return placeholders[idx]
+        return ""
+    html = re.sub(r'\x00PH(\d+)\x00', _restore_placeholder, html)
+
     return f"<html><head>{css}</head><body>{html}</body></html>"
 
 

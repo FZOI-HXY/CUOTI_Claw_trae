@@ -124,9 +124,9 @@ class Settings(BaseSettings):
     paddleocr_model: str = "PaddleOCR-VL-1.6"  # 模型: PaddleOCR-VL-1.6 / PaddleOCR-VL-1.5 / PP-StructureV3 / PP-OCRv6 / PP-OCRv5
 
     # 服务器配置
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8500
-    debug: bool = True
+    debug: bool = False
 
     # 文件存储配置
     upload_dir: str = "./uploads"
@@ -160,6 +160,30 @@ class Settings(BaseSettings):
         """轮询间隔至少 1 秒"""
         if v < 1:
             raise ValueError("poll_interval 至少为 1 秒")
+        return v
+
+    @field_validator("poll_max_retries")
+    @classmethod
+    def validate_poll_max_retries(cls, v: int) -> int:
+        """最大轮询次数至少 1 次"""
+        if v < 1:
+            raise ValueError("poll_max_retries 至少为 1")
+        return v
+
+    @field_validator("rate_limit_requests")
+    @classmethod
+    def validate_rate_limit_requests(cls, v: int) -> int:
+        """速率限制请求数至少 1"""
+        if v < 1:
+            raise ValueError("rate_limit_requests 至少为 1")
+        return v
+
+    @field_validator("rate_limit_window")
+    @classmethod
+    def validate_rate_limit_window(cls, v: int) -> int:
+        """速率限制窗口至少 1 秒"""
+        if v < 1:
+            raise ValueError("rate_limit_window 至少为 1 秒")
         return v
 
     def _resolve_path(self, dir_path: str) -> Path:

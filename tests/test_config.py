@@ -31,7 +31,7 @@ class TestSettingsDefaults:
     def test_default_host_port(self):
         from config import Settings
         s = Settings(_env_file="")  # type: ignore[reportCallIssue]
-        assert s.host == "0.0.0.0"
+        assert s.host == "127.0.0.1"
         assert s.port == 8500
 
     def test_default_max_upload(self):

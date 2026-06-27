@@ -240,7 +240,7 @@ class TestUploadAPI:
     def test_upload_rejects_invalid_type(self, api_client):
         """拒绝不支持的文件类型"""
         resp = api_client.post("/api/upload", files={
-            "file": ("doc.pdf", io.BytesIO(b"PDF content"), "application/pdf")
+            "file": ("malware.exe", io.BytesIO(b"\x4d\x5a"), "application/octet-stream")
         })
         assert resp.status_code == 400
 

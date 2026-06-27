@@ -168,8 +168,8 @@
     });
 
     // ============ 文件队列管理 ============
-    const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/bmp', 'image/webp', 'image/tiff'];
-    const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif'];
+    const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/bmp', 'image/webp', 'image/tiff', 'application/pdf'];
+    const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif', '.pdf'];
     const MAX_SIZE = 50 * 1024 * 1024; // 50MB
 
     function addFilesToQueue(files) {
