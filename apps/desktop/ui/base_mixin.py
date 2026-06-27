@@ -116,7 +116,7 @@ class AppBaseMixin:
                     files_to_add.append(path_str)
             elif p.is_dir():
                 # 按扩展名预过滤 glob，减少对非图片文件的 stat 调用
-                for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif']:
+                for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif', '.pdf']:
                     for f in p.rglob(f'*{ext}'):
                         if f.is_file():
                             path_str = str(f)

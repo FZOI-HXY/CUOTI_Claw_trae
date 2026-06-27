@@ -511,9 +511,10 @@ class MarkdownGenerator:
                 except Exception as e:
                     logger.warning(f"保存版面可视化图失败: {e}")
 
-            # 4. 保存原始上传图片
+            # 4. 保存原始上传文件（保留原始扩展名，PDF 等非图片格式不被强制改为 .png）
             if original_image_data:
-                orig_path = report_dir / "original.png"
+                orig_ext = Path(original_filename).suffix or ".png"
+                orig_path = report_dir / f"original{orig_ext}"
                 def _write_bytes(p: Path, d: bytes):
                     with open(p, "wb") as f:
                         f.write(d)

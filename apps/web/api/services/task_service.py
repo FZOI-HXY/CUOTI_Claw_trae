@@ -139,7 +139,7 @@ class TaskService:
     def add_history(self, item: dict):
         """添加历史记录（内存 + 数据库）"""
         with self._lock:
-            item.setdefault("id", uuid.uuid4().hex[:8])
+            item.setdefault("id", uuid.uuid4().hex[:16])
             self._history.insert(0, item)
             if len(self._history) > self._max_history:
                 self._history.pop()

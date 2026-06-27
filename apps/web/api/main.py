@@ -150,7 +150,7 @@ _rate_limit_store: dict = defaultdict(list)
 async def rate_limit_middleware(request: Request, call_next):
     """简单的内存速率限制中间件，防止暴力请求。"""
     # 健康检查端点不限速
-    if request.url.path in ("//", "/api/health"):
+    if request.url.path == "/api/health":
         return await call_next(request)
 
     client_ip = request.client.host if request.client else "unknown"
@@ -728,7 +728,7 @@ async def _handle_task_done(task_id: str, task_info: dict, poll_status: dict):
     task_info.pop("image_data", None)
 
     ts.add_history({
-        "id": uuid.uuid4().hex[:8],
+        "id": uuid.uuid4().hex[:16],
         "file_id": task_info["file_id"],
         "filename": task_info["filename"],
         "timestamp": datetime.now().isoformat(),
@@ -849,7 +849,7 @@ async def process_image(file_id: str):
             )
 
         ts.add_history({
-            "id": uuid.uuid4().hex[:8],
+            "id": uuid.uuid4().hex[:16],
             "file_id": file_id,
             "filename": file_path.name,
             "timestamp": datetime.now().isoformat(),
@@ -876,7 +876,7 @@ async def process_image(file_id: str):
     except Exception as e:
         logger.error(f"处理失败 [{file_id}]: {e}")
         ts.add_history({
-            "id": uuid.uuid4().hex[:8],
+            "id": uuid.uuid4().hex[:16],
             "file_id": file_id,
             "filename": file_path.name,
             "timestamp": datetime.now().isoformat(),
