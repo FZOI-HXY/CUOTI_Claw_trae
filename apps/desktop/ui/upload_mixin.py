@@ -208,8 +208,8 @@ class UploadTabMixin:
             return
         paths, _ = QFileDialog.getOpenFileNames(
             self,  # type: ignore[arg-type]
-            "选择图片文件", "",
-            "图片文件 (*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif);;所有文件 (*)"
+            "选择文件", "",
+            "图片和PDF文件 (*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif *.pdf);;图片文件 (*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif);;PDF文件 (*.pdf);;所有文件 (*)"
         )
         if paths:
             self.add_files_to_queue(list(paths))
@@ -223,7 +223,7 @@ class UploadTabMixin:
             files_to_add = []
             seen = set()
             # 按扩展名预过滤 glob，减少对非图片文件的 stat 调用
-            for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif']:
+            for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif', '.pdf']:
                 for f in p.rglob(f'*{ext}'):
                     if f.is_file():
                         path_str = str(f)
@@ -236,7 +236,7 @@ class UploadTabMixin:
                 QMessageBox.information(self, "提示", "所选文件夹中没有支持的图片文件")  # type: ignore[arg-type]
 
     def add_files_to_queue(self, paths: List[str]):
-        ALLOWED_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif'}
+        ALLOWED_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif', '.pdf'}
         MAX_SIZE = 50 * 1024 * 1024
 
         added = 0
