@@ -24,6 +24,12 @@ class AppBaseMixin:
     被 StandaloneApp 多重继承使用。
     """
 
+    # 标签页索引命名常量（与 main.py 中 create_*_tab 的顺序一致）
+    TAB_UPLOAD = 0
+    TAB_HISTORY = 1
+    TAB_REPORTS = 2
+    TAB_CONFIG = 3
+
     # ---- 类型标注（实际属性由 StandaloneApp / 其他 Mixin 设置） ----
     api_base: str
     file_queue: List[Dict]
@@ -148,8 +154,8 @@ class AppBaseMixin:
     # ============ 工具函数 ============
 
     @staticmethod
-    def _render_markdown_html(md: str, report_dir: str = "") -> str:
-        return render_markdown_html(md, report_dir=report_dir, api_base="")
+    def _render_markdown_html(md: str, report_id: str = "", api_base: str = "") -> str:
+        return render_markdown_html(md, report_id=report_id, api_base=api_base)
 
     @staticmethod
     def _format_size(bytes_val: int) -> str:
@@ -176,7 +182,7 @@ class AppBaseMixin:
         try:
             self.load_history()
             self.load_reports()
-            if self.tab_widget.currentIndex() == 3:
+            if self.tab_widget.currentIndex() == self.TAB_CONFIG:
                 self.load_config()
             self.show_toast("已刷新")
         except Exception as e:
@@ -201,11 +207,11 @@ class AppBaseMixin:
         if getattr(self, '_shutting_down', False):
             return
         try:
-            if index == 1:
+            if index == self.TAB_HISTORY:
                 self.load_history()
-            elif index == 2:
+            elif index == self.TAB_REPORTS:
                 self.load_reports()
-            elif index == 3:
+            elif index == self.TAB_CONFIG:
                 self.load_config()
         except Exception as e:
             print(f"[Claw] tab_changed({index}) 异常: {e}", flush=True)

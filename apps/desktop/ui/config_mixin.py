@@ -108,9 +108,9 @@ class ConfigTabMixin:
         self.cfg_api_token.setToolTip("输入 PaddleOCR API Token，点击眼睛图标可切换显示/隐藏")
         token_row.addWidget(self.cfg_api_token)
 
-        self._token_toggle_btn = QPushButton("👁")
+        self._token_toggle_btn = QPushButton("显示")
         self._token_toggle_btn.setObjectName("ghostBtn")
-        self._token_toggle_btn.setFixedWidth(36)
+        self._token_toggle_btn.setFixedWidth(48)
         self._token_toggle_btn.setToolTip("切换 Token 显示/隐藏")
         self._token_toggle_btn.clicked.connect(self._toggle_token_visibility)
         token_row.addWidget(self._token_toggle_btn)
@@ -296,10 +296,10 @@ class ConfigTabMixin:
         """切换 Token 输入框的显示/隐藏模式"""
         if self.cfg_api_token.echoMode() == QLineEdit.EchoMode.Password:
             self.cfg_api_token.setEchoMode(QLineEdit.EchoMode.Normal)
-            self._token_toggle_btn.setText("🙈")
+            self._token_toggle_btn.setText("隐藏")
         else:
             self.cfg_api_token.setEchoMode(QLineEdit.EchoMode.Password)
-            self._token_toggle_btn.setText("👁")
+            self._token_toggle_btn.setText("显示")
 
     @staticmethod
     def _set_badge(badge: QLabel, style: str, text: str):
@@ -335,11 +335,14 @@ class ConfigTabMixin:
             self.cfg_api_token.setPlaceholderText("请输入 API Token")
             self.cfg_api_token.clear()
         self.cfg_api_token.setEchoMode(QLineEdit.EchoMode.Password)
-        self._token_toggle_btn.setText("👁")
+        self._token_toggle_btn.setText("显示")
 
         self.cfg_host.setText(config.get("host", "127.0.0.1"))
         self.cfg_port.setValue(config.get("port", 8500))
-        self.cfg_max_size.setValue(config.get("max_upload_size_mb", 50))
+        max_size_mb = config.get("max_upload_size_mb", 50)
+        self.cfg_max_size.setValue(max_size_mb)
+        # 同步更新上传大小限制（供 upload_mixin 使用）
+        self._max_upload_size_bytes = int(max_size_mb) * 1024 * 1024
         idx = self.cfg_log_level.findText(config.get("log_level", "INFO"))
         if idx >= 0:
             self.cfg_log_level.setCurrentIndex(idx)
@@ -360,14 +363,14 @@ class ConfigTabMixin:
     def save_api_config(self):
         """保存 API 配置（含 Token）"""
         token_input = self.cfg_api_token.text().strip()
-        # 忽略占位符/掩码值，避免覆盖真实 Token
-        if token_input in ("", "********"):
-            token_input = ""  # 空值会被后端跳过，不覆盖现有配置
         data = {
             "paddleocr_api_url": self.cfg_api_url.text().strip(),
-            "paddleocr_api_key": token_input,
             "paddleocr_model": self.cfg_model.currentText(),
         }
+        # 仅当用户输入了新 Token（非空且非掩码值）时才包含在请求数据中，
+        # 避免空值覆盖后端已有的真实 Token
+        if token_input and token_input != "********":
+            data["paddleocr_api_key"] = token_input
         worker = ApiTask(self.api_base, "POST", "/api/config", json_data=data)
         worker.finished.connect(self._on_api_saved)
         worker.error.connect(lambda e: self._on_api_save_error(e))
@@ -420,22 +423,30 @@ class ConfigTabMixin:
             s.polish(self._api_test_result)
         self._set_badge(self._api_status_badge, "badgeWarning", "⏳ 测试中...")
 
-        worker = ApiTask(self.api_base, "GET", "/api/health")
+        worker = ApiTask(self.api_base, "GET", "/api/config")
         worker.finished.connect(self._on_test_success)
         worker.error.connect(self._on_test_error)
         worker.start()
 
     def _on_test_success(self, data):
-        if data.get("status") == "healthy":
-            self._api_test_result.setText("✓ 服务连接正常")
+        # 检查 API Token 是否已配置（而非仅检测本地服务健康）
+        if data.get("api_key_configured"):
+            self._api_test_result.setText("✓ 服务连接正常，API Token 已配置")
             self._api_test_result.setObjectName("testResultSuccess")
             s = self._api_test_result.style()
             if s is not None:
                 s.unpolish(self._api_test_result)
                 s.polish(self._api_test_result)
-            self._set_badge(self._api_status_badge, "badgeSuccess", "✓ API 可连接")
+            self._set_badge(self._api_status_badge, "badgeSuccess", "✓ API 可用")
         else:
-            self._on_test_error("响应异常")
+            # 服务可连接但 Token 未配置
+            self._api_test_result.setText("⚠ 服务可连接，但 API Token 未配置")
+            self._api_test_result.setObjectName("testResultError")
+            s = self._api_test_result.style()
+            if s is not None:
+                s.unpolish(self._api_test_result)
+                s.polish(self._api_test_result)
+            self._set_badge(self._api_status_badge, "badgeWarning", "⚠ Token 未配置")
 
     def _on_test_error(self, err: str):
         self._api_test_result.setText(f"✗ 连接失败: {err}")

@@ -101,6 +101,8 @@ class StandaloneApp(
         self.processing = False
         self.active_workers: List[QThread] = []
         self._shutting_down = False  # 关闭标志，阻止关闭过程中创建新线程
+        # 上传文件大小限制（从后端 /api/config 的 max_upload_size_mb 更新，默认 50MB）
+        self._max_upload_size_bytes: int = 50 * 1024 * 1024
 
         self.setup_ui()
         self.setup_menu()
@@ -169,7 +171,11 @@ class StandaloneApp(
         # 4. 清理 active_workers 中剩余的线程
         for w in list(getattr(self, 'active_workers', [])):
             if w.isRunning():
-                w.quit()
+                # 使用协作式取消而非 quit()（quit() 对未调用 exec() 的线程无效）
+                if hasattr(w, 'cancel'):
+                    w.cancel()
+                else:
+                    w.quit()
                 w.wait(1000)
         event.accept()
         QApplication.quit()
@@ -313,6 +319,8 @@ def _do_main():
 
     # 启动时加载数据
     QTimer.singleShot(500, window.refresh_all)
+    # 启动时加载配置（获取 max_upload_size_mb 等设置，不依赖标签页切换）
+    QTimer.singleShot(700, window.load_config)
 
     print("[Claw] 进入事件循环", flush=True)
     import time

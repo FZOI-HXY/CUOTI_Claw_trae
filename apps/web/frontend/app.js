@@ -88,6 +88,7 @@
         const ctx = canvas.getContext('2d');
         let particles = [];
         let animId;
+        let running = false;
 
         function resize() {
             canvas.width = window.innerWidth;
@@ -138,34 +139,68 @@
                     }
                 }
             }
-            animId = requestAnimationFrame(animate);
+            if (running) animId = requestAnimationFrame(animate);
+        }
+
+        function startAnim() {
+            if (running) return;
+            running = true;
+            animate();
+        }
+
+        function stopAnim() {
+            running = false;
+            if (animId) cancelAnimationFrame(animId);
         }
 
         resize();
         createParticles();
-        animate();
+        startAnim();
         // debounce resize 事件
         let resizeTimer;
         window.addEventListener('resize', () => {
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => { resize(); createParticles(); }, 200);
         });
+        // 页面不可见时暂停粒子动画以节省资源
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                stopAnim();
+            } else {
+                startAnim();
+            }
+        });
     }
 
     // ============ 视图切换 ============
+    let viewLoadController = null;
+
     function switchView(viewName) {
         state.currentView = viewName;
         $$('.view-panel').forEach(p => p.classList.remove('active'));
-        $$('.nav-btn').forEach(b => b.classList.remove('active'));
+        $$('.nav-btn').forEach(b => {
+            b.classList.remove('active');
+            b.removeAttribute('aria-current');
+        });
 
         const panel = $(`#view-${viewName}`);
         const btn = document.querySelector(`[data-view="${viewName}"]`);
 
         if (panel) panel.classList.add('active');
-        if (btn) btn.classList.add('active');
+        if (btn) {
+            btn.classList.add('active');
+            btn.setAttribute('aria-current', 'page');
+        }
 
-        if (viewName === 'history') loadHistory();
-        if (viewName === 'reports') loadReports();
+        // 取消前一次视图加载请求，避免竞态
+        if (viewLoadController) {
+            viewLoadController.abort();
+        }
+        viewLoadController = new AbortController();
+        const signal = viewLoadController.signal;
+
+        if (viewName === 'history') loadHistory(signal);
+        if (viewName === 'reports') loadReports(signal);
         if (viewName === 'config') loadConfig();
     }
 
@@ -217,6 +252,7 @@
                 fileId: null,
                 error: null,
                 result: null,
+                previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
             });
             added++;
         }
@@ -229,59 +265,104 @@
         }
     }
 
+    const QUEUE_STATUS_TEXT = {
+        'pending': '等待中',
+        'uploading': '上传中…',
+        'processing': '识别中…',
+        'uploaded': '已上传',
+        'submitting': '提交中…',
+        'done': '完成',
+        'error': '失败',
+    };
+    const QUEUE_STATUS_ICON = {
+        'pending': '\u23F3',
+        'uploading': '\u2B06',
+        'processing': '\u2699',
+        'uploaded': '\u2705',
+        'submitting': '\u23F3',
+        'done': '\u2705',
+        'error': '\u274C',
+    };
+
     function renderQueue() {
         if (state.fileQueue.length === 0) {
             dom.fileQueueSection.style.display = 'none';
+            dom.fileQueueList.innerHTML = '';
             return;
         }
 
         dom.fileQueueSection.style.display = 'block';
         dom.queueCount.textContent = state.fileQueue.length;
 
-        dom.fileQueueList.innerHTML = state.fileQueue.map((item, idx) => {
+        // 差量更新：复用已存在的 DOM 节点，仅更新 class 与文本；不存在才创建
+        const existing = new Map();
+        dom.fileQueueList.querySelectorAll('.queue-item[data-queue-idx]').forEach(node => {
+            existing.set(node.dataset.queueIdx, node);
+        });
+
+        const seen = new Set();
+
+        state.fileQueue.forEach((item, idx) => {
+            const key = String(idx);
+            seen.add(key);
             const statusClass = `queue-status-${item.status}`;
-            const statusText = {
-                'pending': '等待中',
-                'uploading': '上传中…',
-                'processing': '识别中…',
-                'done': '完成',
-                'error': '失败',
-            }[item.status] || '';
+            const statusText = QUEUE_STATUS_TEXT[item.status] || '';
+            const statusIcon = QUEUE_STATUS_ICON[item.status] || '';
 
-            const statusIcon = {
-                'pending': '\u23F3',
-                'uploading': '\u2B06',
-                'processing': '\u2699',
-                'done': '\u2705',
-                'error': '\u274C',
-            }[item.status] || '';
+            let node = existing.get(key);
+            if (!node) {
+                // 创建新节点
+                const safeName = escapeHtml(item.name);
+                const previewHtml = item.previewUrl
+                    ? `<img class="queue-preview-img" src="${escapeHtml(item.previewUrl)}" alt="${safeName}">`
+                    : '';
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = `
+                    <div class="queue-item ${statusClass}" data-queue-idx="${idx}">
+                        <span class="queue-index">#${idx + 1}</span>
+                        <div class="queue-preview">${previewHtml}</div>
+                        <div class="queue-info">
+                            <span class="queue-name" title="${safeName}">${safeName}</span>
+                            <span class="queue-size">${formatFileSize(item.size)}</span>
+                        </div>
+                        <span class="queue-status-icon">${statusIcon}</span>
+                        <span class="queue-status-text">${statusText}</span>
+                    </div>`;
+                node = wrapper.firstElementChild;
+                dom.fileQueueList.appendChild(node);
+            } else {
+                // 差量更新：仅更新状态相关的 class 与文本
+                node.className = `queue-item ${statusClass}`;
+                const iconEl = node.querySelector('.queue-status-icon');
+                if (iconEl) iconEl.textContent = statusIcon;
+                const textEl = node.querySelector('.queue-status-text');
+                if (textEl) textEl.textContent = statusText;
 
-            const safeName = escapeHtml(item.name);
-            const previewHtml = item.previewUrl
-                ? `<img class="queue-preview-img" src="${escapeHtml(item.previewUrl)}" alt="${safeName}">`
-                : '';
+                // 更新错误信息
+                let errEl = node.querySelector('.queue-error');
+                if (item.error) {
+                    if (!errEl) {
+                        errEl = document.createElement('div');
+                        errEl.className = 'queue-error';
+                        node.appendChild(errEl);
+                    }
+                    errEl.textContent = item.error;
+                } else if (errEl) {
+                    errEl.remove();
+                }
+            }
+        });
 
-            const errorHtml = item.error
-                ? `<div class="queue-error">${escapeHtml(item.error)}</div>`
-                : '';
-
-            return `
-                <div class="queue-item ${statusClass}">
-                    <span class="queue-index">#${idx + 1}</span>
-                    <div class="queue-preview">${previewHtml}</div>
-                    <div class="queue-info">
-                        <span class="queue-name" title="${safeName}">${safeName}</span>
-                        <span class="queue-size">${formatFileSize(item.size)}</span>
-                    </div>
-                    <span class="queue-status-icon">${statusIcon}</span>
-                    <span class="queue-status-text">${statusText}</span>
-                    ${errorHtml}
-                </div>
-            `;
-        }).join('');
+        // 移除不再存在的多余节点
+        existing.forEach((node, key) => {
+            if (!seen.has(key)) node.remove();
+        });
     }
 
     function clearQueue() {
+        state.fileQueue.forEach(item => {
+            if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+        });
         state.fileQueue = [];
         state.batchResults = [];
         renderQueue();
@@ -396,15 +477,7 @@
         return files;
     }
 
-    // 清空队列按钮
-    document.addEventListener('click', (e) => {
-        if (e.target.id === 'btn-clear-queue') {
-            clearQueue();
-        }
-        if (e.target.id === 'btn-process-all') {
-            processAllFiles();
-        }
-    });
+    // 清空队列按钮、处理全部按钮：见文末统一事件委托
 
     // ============ 批量处理（提交+轮询模式，结果按提交顺序排列） ============
     const POLL_INTERVAL_MS = 2000; // 轮询间隔 2 秒
@@ -484,7 +557,8 @@
                 try {
                     const res = await fetch(`${API_BASE}/api/submit/${item.fileId}`, { method: 'POST' });
                     if (!res.ok) {
-                        const err = await res.json();
+                        let err;
+                        try { err = await res.json(); } catch { throw new Error(res.statusText || '提交失败'); }
                         throw new Error(err.detail || '提交失败');
                     }
                     const data = await res.json();
@@ -575,7 +649,6 @@
                 completedCount, processingItems.length,
                 `轮询中 ${completedCount}/${processingItems.length} (第${pollCount}轮)`
             );
-            dom.progressBar.style.width = Math.round((completedCount / processingItems.length) * 90 + 5) + '%';
             renderQueue();
 
             // 检查是否全部完成
@@ -615,7 +688,7 @@
                     processingTime: item.result?.processing_time || 0,
                     imagesCount: item.result?.images_count || 0,
                     mdLength: item.result?.markdown_text?.length || 0,
-                    reportDir: item.result?.report_dir || '',
+                    reportId: item.result?.report_id || '',
                     layoutItems: item.result?.layout_items || [],
                     layoutItemsCount: item.result?.layout_items_count || 0,
                 });
@@ -665,7 +738,8 @@
         });
 
         if (!uploadRes.ok) {
-            const err = await uploadRes.json();
+            let err;
+            try { err = await uploadRes.json(); } catch { throw new Error(uploadRes.statusText || '上传失败'); }
             throw new Error(err.detail || '上传失败');
         }
 
@@ -676,11 +750,6 @@
         const pct = Math.round((current / total) * 100);
         dom.batchProgressText.textContent = `处理中 ${current}/${total}`;
         dom.progressBar.style.width = pct + '%';
-        dom.progressText.textContent = text;
-    }
-
-    function updateProgress(percent, text) {
-        dom.progressBar.style.width = percent + '%';
         dom.progressText.textContent = text;
     }
 
@@ -814,16 +883,19 @@
                 <h3>版面分析 (<span>${layoutItems.length}个区域</span>)</h3>
                 <div class="layout-items-list">
                     ${layoutItems.map((item, i) => {
-                        const label = layoutTypeLabels[item.type] || item.type || '未分类';
+                        const rawType = item.type || 'unknown';
+                        const safeType = escapeHtml(rawType);
+                        const label = layoutTypeLabels[item.type] || rawType || '未分类';
+                        const safeLabel = escapeHtml(label);
                         const preview = item.content_preview
                             ? `<div class="layout-item-content">${escapeHtml(item.content_preview)}</div>`
                             : '';
                         return `
-                        <div class="layout-item layout-type-${item.type || 'unknown'}">
+                        <div class="layout-item layout-type-${safeType}">
                             <div class="layout-item-header">
                                 <span class="layout-item-index">#${i + 1}</span>
-                                <span class="layout-item-type">${label}</span>
-                                <span class="layout-item-type-en">(${item.type || 'unknown'})</span>
+                                <span class="layout-item-type">${safeLabel}</span>
+                                <span class="layout-item-type-en">(${safeType})</span>
                             </div>
                             ${preview}
                         </div>
@@ -841,8 +913,8 @@
             if (window.MathJax && window.MathJax.typesetClear) {
                 window.MathJax.typesetClear([dom.mdContent]);
             }
-            // 从 report_dir 提取 report_id（如 "c:\…\20260609_112608" → "20260609_112608"）
-            const reportId = data.report_dir ? data.report_dir.split(/[\\/]/).pop() : null;
+            // 后端直接返回 report_id（目录名），无需从路径提取
+            const reportId = data.report_id || null;
             dom.mdContent.innerHTML = renderMarkdown(data.markdown_text, reportId);
             if (window.MathJax && window.MathJax.typesetPromise) {
                 window.MathJax.typesetPromise([dom.mdContent]).catch((err) => console.error('MathJax typeset error:', err));
@@ -857,9 +929,13 @@
     }
 
     function escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        if (str == null) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     function renderMarkdown(md, reportId) {
@@ -876,35 +952,36 @@
             return src;
         }
 
-        // XSS 防护：移除 script 标签、事件处理器和 javascript: 协议
+        // XSS 防护：移除 script 标签、事件处理器（含无引号/单引号/双引号）和 javascript: 协议
         let sanitized = md
             .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
             .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
             .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+            .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
             .replace(/javascript:/gi, '');
 
         let html = sanitized
             // 先处理 HTML img 标签（PP-StructureV3 输出中可能包含）
             .replace(/<img\s+src="([^"]+)"(?:\s+alt="([^"]*)")?[^>]*\/?>/gi,
-                (match, src, alt) => `<img src="${resolveImagePath(src)}" alt="${alt || ''}" width="100%">`)
+                (match, src, alt) => `<img src="${escapeHtml(resolveImagePath(src))}" alt="${escapeHtml(alt || '')}" width="100%">`)
             // Markdown 图片 ![alt](src)
             .replace(/!\[([^\]]*)\]\(([^)]+)\)/g,
-                (match, alt, src) => `<img src="${resolveImagePath(src)}" alt="${alt || ''}" width="100%">`)
-            .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-            .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-            .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.+?)\*/g, '<em>$1</em>')
-            .replace(/`([^`]+)`/g, '<code>$1</code>')
-            .replace(/```json\n([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-            .replace(/^- (.+)$/gm, '<li>$1</li>')
+                (match, alt, src) => `<img src="${escapeHtml(resolveImagePath(src))}" alt="${escapeHtml(alt || '')}" width="100%">`)
+            .replace(/^### (.+)$/gm, (m, p1) => `<h3>${escapeHtml(p1)}</h3>`)
+            .replace(/^## (.+)$/gm, (m, p1) => `<h2>${escapeHtml(p1)}</h2>`)
+            .replace(/^# (.+)$/gm, (m, p1) => `<h1>${escapeHtml(p1)}</h1>`)
+            .replace(/\*\*(.+?)\*\*/g, (m, p1) => `<strong>${escapeHtml(p1)}</strong>`)
+            .replace(/\*(.+?)\*/g, (m, p1) => `<em>${escapeHtml(p1)}</em>`)
+            .replace(/`([^`]+)`/g, (m, p1) => `<code>${escapeHtml(p1)}</code>`)
+            .replace(/```json\n([\s\S]*?)```/g, (m, p1) => `<pre><code>${escapeHtml(p1)}</code></pre>`)
+            .replace(/^- (.+)$/gm, (m, p1) => `<li>${escapeHtml(p1)}</li>`)
             .replace(/^\|(.+)\|$/gm, (match) => {
                 const cells = match.split('|').filter(c => c.trim());
                 const isHeader = match.includes('---');
                 if (isHeader) return '';
                 return '<tr>' + cells.map(c => `<td>${escapeHtml(c.trim())}</td>`).join('') + '</tr>';
             })
-            .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
+            .replace(/^> (.+)$/gm, (m, p1) => `<blockquote>${escapeHtml(p1)}</blockquote>`)
             .replace(/^---$/gm, '<hr>');
 
         return html;
@@ -914,29 +991,7 @@
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    // ============ 结果操作按钮 ============
-    document.addEventListener('click', async (e) => {
-        if (e.target.id === 'btn-download-all-reports') {
-            downloadAllReports();
-        }
-        if (e.target.id === 'btn-download-layout-report') {
-            downloadLayoutReport();
-        }
-        if (e.target.id === 'btn-view-report') {
-            switchView('reports');
-        }
-        if (e.target.id === 'btn-retry') {
-            clearQueue();
-        }
-
-        // 查看单个文件结果
-        const viewFileBtn = e.target.closest('.view-file-result-btn');
-        if (viewFileBtn) {
-            const fileId = viewFileBtn.dataset.fileId;
-            const name = viewFileBtn.dataset.name;
-            if (fileId) await viewFileResult(fileId, name);
-        }
-    });
+    // ============ 结果操作按钮：见文末统一事件委托 ============
 
     async function viewFileResult(fileId, name) {
         // 从队列中查找结果
@@ -958,10 +1013,7 @@
 
         // 收集所有 report_id
         const reportIds = successResults
-            .map(r => {
-                const reportDir = r.reportDir || '';
-                return reportDir.split(/[\\/]/).pop();
-            })
+            .map(r => r.reportId || '')
             .filter(id => id);
 
         if (reportIds.length === 0) {
@@ -976,7 +1028,8 @@
                 body: JSON.stringify({ report_ids: reportIds }),
             });
             if (!res.ok) {
-                const err = await res.json();
+                let err;
+                try { err = await res.json(); } catch { throw new Error(res.statusText || '下载失败'); }
                 throw new Error(err.detail || '下载失败');
             }
             const blob = await res.blob();
@@ -1020,7 +1073,8 @@
                 body: JSON.stringify({ files }),
             });
             if (!res.ok) {
-                const err = await res.json();
+                let err;
+                try { err = await res.json(); } catch { throw new Error(res.statusText || '下载失败'); }
                 throw new Error(err.detail || '下载失败');
             }
             const blob = await res.blob();
@@ -1037,9 +1091,12 @@
     }
 
     // ============ 历史记录 ============
-    async function loadHistory() {
+    async function loadHistory(signal) {
         try {
-            const res = await fetch(`${API_BASE}/api/history?limit=50`);
+            const res = await fetch(`${API_BASE}/api/history?limit=50`, { signal });
+            if (!res.ok) {
+                throw new Error(res.statusText || '加载历史记录失败');
+            }
             const data = await res.json();
 
             if (data.items.length === 0) {
@@ -1061,7 +1118,7 @@
                     <td>${item.processing_time || 0}s</td>
                     <td>${item.images_count || 0}</td>
                     <td>
-                        <button class="btn btn-ghost btn-sm view-report-btn" data-report-id="${escapeHtml(item.report_dir ? item.report_dir.split('/').pop().split('\\').pop() : '')}">
+                        <button class="btn btn-ghost btn-sm view-report-btn" data-report-id="${escapeHtml(item.report_id || '')}">
                             查看
                         </button>
                     </td>
@@ -1069,7 +1126,9 @@
             `).join('');
 
         } catch (error) {
+            if (error.name === 'AbortError') return;
             console.error('加载历史记录失败:', error);
+            toast('加载历史记录失败', 'error');
             dom.historyTbody.innerHTML = `
                 <tr><td colspan="7" class="empty-row">加载失败</td></tr>`;
         }
@@ -1079,9 +1138,9 @@
     const selectedReportIds = new Set();
 
     function _refreshBatchDeleteBtn() {
+        const count = selectedReportIds.size;
         const btn = $('#btn-batch-delete-reports');
         if (btn) {
-            const count = selectedReportIds.size;
             btn.disabled = count === 0;
             btn.textContent = count > 0 ? `批量删除 (${count})` : '批量删除';
         }
@@ -1092,9 +1151,12 @@
         }
     }
 
-    async function loadReports() {
+    async function loadReports(signal) {
         try {
-            const res = await fetch(`${API_BASE}/api/reports?limit=50`);
+            const res = await fetch(`${API_BASE}/api/reports?limit=50`, { signal });
+            if (!res.ok) {
+                throw new Error(res.statusText || '加载报告列表失败');
+            }
             const data = await res.json();
 
             if (data.reports.length === 0) {
@@ -1129,12 +1191,171 @@
             _refreshBatchDeleteBtn();
 
         } catch (error) {
+            if (error.name === 'AbortError') return;
             console.error('加载报告列表失败:', error);
+            toast('加载报告列表失败', 'error');
         }
     }
 
-    // 报告操作（事件委托）
+    // 报告操作（事件委托）：见文末统一事件委托
+
+    async function viewReport(reportId) {
+        try {
+            const res = await fetch(`${API_BASE}/api/report/${encodeURIComponent(reportId)}`);
+            const data = await res.json();
+            if (window.MathJax && window.MathJax.typesetClear) {
+                window.MathJax.typesetClear([dom.mdContent]);
+            }
+            dom.mdContent.innerHTML = renderMarkdown(data.content, reportId);
+            dom.markdownPreview.style.display = 'block';
+            if (window.MathJax && window.MathJax.typesetPromise) {
+                window.MathJax.typesetPromise([dom.mdContent]).catch((err) => console.error('MathJax typeset error:', err));
+            }
+            dom.resultSection.style.display = 'block';
+            dom.batchResults.innerHTML = '';
+            dom.resultStats.innerHTML = `<div class="stat-item"><span class="stat-value">#${escapeHtml(reportId || '')}</span><span class="stat-label">报告编号</span></div>`;
+            switchView('upload');
+            window.scrollTo({ top: dom.resultSection.offsetTop - 80, behavior: 'smooth' });
+        } catch (error) {
+            toast('加载报告失败', 'error');
+        }
+    }
+
+    async function downloadReportById(reportId) {
+        try {
+            const res = await fetch(`${API_BASE}/api/report/${encodeURIComponent(reportId)}/download`);
+            if (!res.ok) {
+                toast('下载失败', 'error');
+                return;
+            }
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `report_${reportId}.zip`;
+            a.click();
+            URL.revokeObjectURL(url);
+            toast('报告已下载（解压后用 Typora 打开 report.md 即可查看）', 'success');
+        } catch (error) {
+            toast('下载失败', 'error');
+        }
+    }
+
+    async function deleteReport(reportId) {
+        try {
+            const res = await fetch(`${API_BASE}/api/report/${encodeURIComponent(reportId)}`, { method: 'DELETE' });
+            if (!res.ok) {
+                throw new Error(res.statusText || '删除失败');
+            }
+            const data = await res.json();
+            if (data.success) {
+                toast('报告已删除', 'success');
+                loadReports();
+            } else {
+                toast('删除失败', 'error');
+            }
+        } catch (error) {
+            toast('删除失败', 'error');
+        }
+    }
+
+    // ============ 系统配置 ============
+    async function loadConfig() {
+        try {
+            const res = await fetch(`${API_BASE}/api/config`);
+            if (!res.ok) {
+                throw new Error(res.statusText || '加载配置失败');
+            }
+            const config = await res.json();
+
+            $('#cfg-api-url').value = config.paddleocr_api_url || '';
+            $('#cfg-host').value = config.host || '127.0.0.1';
+            $('#cfg-port').value = config.port || 8500;
+            $('#cfg-model').value = config.paddleocr_model || 'PP-StructureV3';
+            $('#cfg-max-size').value = config.max_upload_size_mb || 50;
+            $('#cfg-upload-dir').value = config.upload_dir || './uploads';
+            $('#cfg-output-dir').value = config.output_dir || './output';
+            $('#cfg-log-level').value = config.log_level || 'INFO';
+
+            if (config.api_key_configured) {
+                $('#cfg-api-key').placeholder = config.api_key_prefix + ' (已配置)';
+            }
+        } catch (error) {
+            console.error('加载配置失败:', error);
+            toast('加载配置失败', 'error');
+        }
+    }
+
+    // 配置保存按钮：见文末统一事件委托
+
+    async function saveConfig(data, name) {
+        try {
+            const res = await fetch(`${API_BASE}/api/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+            if (!res.ok) {
+                throw new Error(res.statusText || `${name}保存失败`);
+            }
+            const result = await res.json();
+            if (result.success) {
+                toast(`${name}已保存 (${result.updated_fields.length}项)`, 'success');
+            } else {
+                toast(`${name}保存失败`, 'error');
+            }
+        } catch (error) {
+            toast(`${name}保存失败`, 'error');
+        }
+    }
+
+    async function testApiConnection() {
+        toast('正在测试API连接…', 'info');
+        try {
+            const res = await fetch(`${API_BASE}/api/health`);
+            const data = await res.json();
+            if (data.status === 'healthy') {
+                toast('API服务连接正常', 'success');
+            } else {
+                toast('API服务响应异常', 'warning');
+            }
+        } catch (error) {
+            toast('API服务连接失败', 'error');
+        }
+    }
+
+    // ============ 统一事件委托（合并原 5 个全局 click 监听器） ============
     document.addEventListener('click', async (e) => {
+        // --- 队列操作 ---
+        if (e.target.id === 'btn-clear-queue') {
+            clearQueue();
+        }
+        if (e.target.id === 'btn-process-all') {
+            processAllFiles();
+        }
+
+        // --- 结果操作 ---
+        if (e.target.id === 'btn-download-all-reports') {
+            downloadAllReports();
+        }
+        if (e.target.id === 'btn-download-layout-report') {
+            downloadLayoutReport();
+        }
+        if (e.target.id === 'btn-view-report') {
+            switchView('reports');
+        }
+        if (e.target.id === 'btn-retry') {
+            clearQueue();
+        }
+
+        const viewFileBtn = e.target.closest('.view-file-result-btn');
+        if (viewFileBtn) {
+            const fileId = viewFileBtn.dataset.fileId;
+            const name = viewFileBtn.dataset.name;
+            if (fileId) await viewFileResult(fileId, name);
+        }
+
+        // --- 报告操作 ---
         const reportBtn = e.target.closest('.view-report-btn');
         const downloadBtn = e.target.closest('.download-report-btn');
         const deleteBtn = e.target.closest('.delete-report-btn');
@@ -1186,7 +1407,15 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ids }),
                 });
-                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(res.statusText || '批量删除失败');
+                }
+                let data;
+                try {
+                    data = await res.json();
+                } catch {
+                    throw new Error(res.statusText || '批量删除失败');
+                }
                 if (data.success) {
                     toast(`已删除 ${data.deleted} 个报告${data.failed > 0 ? `，失败 ${data.failed} 个` : ''}`, 'success');
                     selectedReportIds.clear();
@@ -1216,88 +1445,8 @@
                 deleteReport(reportId);
             }
         }
-    });
 
-    async function viewReport(reportId) {
-        try {
-            const res = await fetch(`${API_BASE}/api/report/${reportId}`);
-            const data = await res.json();
-            if (window.MathJax && window.MathJax.typesetClear) {
-                window.MathJax.typesetClear([dom.mdContent]);
-            }
-            dom.mdContent.innerHTML = renderMarkdown(data.content, reportId);
-            dom.markdownPreview.style.display = 'block';
-            if (window.MathJax && window.MathJax.typesetPromise) {
-                window.MathJax.typesetPromise([dom.mdContent]).catch((err) => console.error('MathJax typeset error:', err));
-            }
-            dom.resultSection.style.display = 'block';
-            dom.batchResults.innerHTML = '';
-            dom.resultStats.innerHTML = `<div class="stat-item"><span class="stat-value">#${escapeHtml(reportId || '')}</span><span class="stat-label">报告编号</span></div>`;
-            switchView('upload');
-            window.scrollTo({ top: dom.resultSection.offsetTop - 80, behavior: 'smooth' });
-        } catch (error) {
-            toast('加载报告失败', 'error');
-        }
-    }
-
-    async function downloadReportById(reportId) {
-        try {
-            const res = await fetch(`${API_BASE}/api/report/${reportId}/download`);
-            if (!res.ok) {
-                toast('下载失败', 'error');
-                return;
-            }
-            const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `report_${reportId}.zip`;
-            a.click();
-            URL.revokeObjectURL(url);
-            toast('报告已下载（解压后用 Typora 打开 report.md 即可查看）', 'success');
-        } catch (error) {
-            toast('下载失败', 'error');
-        }
-    }
-
-    async function deleteReport(reportId) {
-        try {
-            const res = await fetch(`${API_BASE}/api/report/${reportId}`, { method: 'DELETE' });
-            const data = await res.json();
-            if (data.success) {
-                toast('报告已删除', 'success');
-                loadReports();
-            }
-        } catch (error) {
-            toast('删除失败', 'error');
-        }
-    }
-
-    // ============ 系统配置 ============
-    async function loadConfig() {
-        try {
-            const res = await fetch(`${API_BASE}/api/config`);
-            const config = await res.json();
-
-            $('#cfg-api-url').value = config.paddleocr_api_url || '';
-            $('#cfg-host').value = config.host || '127.0.0.1';
-            $('#cfg-port').value = config.port || 8500;
-            $('#cfg-model').value = config.paddleocr_model || 'PP-StructureV3';
-            $('#cfg-max-size').value = config.max_upload_size_mb || 50;
-            $('#cfg-upload-dir').value = config.upload_dir || './uploads';
-            $('#cfg-output-dir').value = config.output_dir || './output';
-            $('#cfg-log-level').value = config.log_level || 'INFO';
-
-            if (config.api_key_configured) {
-                $('#cfg-api-key').placeholder = config.api_key_prefix + ' (已配置)';
-            }
-        } catch (error) {
-            console.error('加载配置失败:', error);
-        }
-    }
-
-    // 配置保存按钮
-    document.addEventListener('click', async (e) => {
+        // --- 配置保存 ---
         if (e.target.id === 'btn-save-api-config') {
             const data = {
                 paddleocr_api_url: $('#cfg-api-url').value,
@@ -1328,41 +1477,8 @@
         if (e.target.id === 'btn-test-api') {
             await testApiConnection();
         }
-    });
 
-    async function saveConfig(data, name) {
-        try {
-            const res = await fetch(`${API_BASE}/api/config`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data),
-            });
-            const result = await res.json();
-            if (result.success) {
-                toast(`${name}已保存 (${result.updated_fields.length}项)`, 'success');
-            }
-        } catch (error) {
-            toast(`${name}保存失败`, 'error');
-        }
-    }
-
-    async function testApiConnection() {
-        toast('正在测试API连接…', 'info');
-        try {
-            const res = await fetch(`${API_BASE}/api/health`);
-            const data = await res.json();
-            if (data.status === 'healthy') {
-                toast('API服务连接正常', 'success');
-            } else {
-                toast('API服务响应异常', 'warning');
-            }
-        } catch (error) {
-            toast('API服务连接失败', 'error');
-        }
-    }
-
-    // ============ 刷新按钮 ============
-    document.addEventListener('click', (e) => {
+        // --- 刷新按钮 ---
         if (e.target.id === 'btn-refresh-history') loadHistory();
         if (e.target.id === 'btn-refresh-reports') loadReports();
     });

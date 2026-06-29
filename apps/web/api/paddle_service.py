@@ -252,7 +252,8 @@ class PaddleOCRService:
 
             if not job_id:
                 error_msg = self._parse_error(result)
-                logger.error(f"提交失败 [{filename}]: {error_msg}, 完整响应: {result}")
+                # S16: 仅记录状态码和错误消息，不记录完整 result（防止敏感信息泄露）
+                logger.error(f"提交失败 [{filename}]: {error_msg}")
                 raise Exception(f"API 返回异常: {error_msg}")
 
             logger.info(f"任务已提交 [{filename}]: jobId={job_id}")

@@ -237,7 +237,8 @@ class UploadTabMixin:
 
     def add_files_to_queue(self, paths: List[str]):
         ALLOWED_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif', '.pdf'}
-        MAX_SIZE = 50 * 1024 * 1024
+        # 从后端 /api/config 获取的 max_upload_size_mb，默认 50MB
+        MAX_SIZE = getattr(self, '_max_upload_size_bytes', 50 * 1024 * 1024)
 
         added = 0
         skipped = 0
@@ -368,7 +369,8 @@ class UploadTabMixin:
         worker.finished.connect(self._on_upload_done)
         worker.error.connect(self._on_upload_error)
         self.active_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._safe_remove_worker(w))
+        # finished 信号携带数据参数，使用 *args 捕获并忽略，确保 w 绑定为 worker 实例
+        worker.finished.connect(lambda *args, w=worker: self._safe_remove_worker(w))
         worker.start()
 
     def _on_upload_done(self, data: dict):
@@ -416,11 +418,11 @@ class UploadTabMixin:
             worker.finished.connect(self._on_submit_done)
             worker.error.connect(self._on_submit_error)
             self.active_workers.append(worker)
-            worker.finished.connect(lambda w=worker: self._safe_remove_worker(w))
+            # finished 信号携带数据参数，使用 *args 捕获并忽略，确保 w 绑定为 worker 实例
+            worker.finished.connect(lambda *args, w=worker: self._safe_remove_worker(w))
             worker.start()
 
         self.render_queue()
-        self._check_submit_done(total)
 
     def _on_submit_done(self, data: dict):
         idx = data.pop("_index")
@@ -435,9 +437,7 @@ class UploadTabMixin:
         self._submit_done_count += 1
         if self._submit_done_count >= self._submit_count:
             self.progress_bar.setValue(25)
-            self._set_step_complete("upload")
-            self._set_step_active("analyze")
-            self._start_polling(self._submit_total)
+            self._check_submit_done(self._submit_total)
 
     def _on_submit_error(self, idx: int, error: str):
         item = self.file_queue[idx]
@@ -491,7 +491,8 @@ class UploadTabMixin:
         worker.finished.connect(self._on_poll_done)
         worker.error.connect(self._on_poll_error)
         self.active_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._safe_remove_worker(w))
+        # finished 信号携带数据参数，使用 *args 捕获并忽略，确保 w 绑定为 worker 实例
+        worker.finished.connect(lambda *args, w=worker: self._safe_remove_worker(w))
         worker.start()
 
     def _on_poll_done(self, results: list):
@@ -558,8 +559,8 @@ class UploadTabMixin:
                     "success": True,
                     "processingTime": item["result"].get("processing_time", 0) if item["result"] else 0,
                     "imagesCount": item["result"].get("images_count", 0) if item["result"] else 0,
-                    "mdLength": item["result"].get("markdown_text", "").__len__() if item["result"] else 0,
-                    "reportDir": item["result"].get("report_dir", "") if item["result"] else "",
+                    "mdLength": len(item["result"].get("markdown_text", "")) if item["result"] else 0,
+                    "reportId": item["result"].get("report_id", "") if item["result"] else "",
                     "layoutItems": item["result"].get("layout_items", []) if item["result"] else [],
                     "layoutItemsCount": item["result"].get("layout_items_count", 0) if item["result"] else 0,
                 })
@@ -615,8 +616,9 @@ class UploadTabMixin:
             if item["file_id"] == file_id and item["result"]:
                 md_text = item["result"].get("markdown_text", "")
                 if md_text:
-                    report_dir = item["result"].get("report_dir", "")
-                    self.markdown_view.setHtml(self._render_markdown_html(md_text, report_dir=report_dir))
+                    report_id = item["result"].get("report_id", "")
+                    self.markdown_view.setHtml(self._render_markdown_html(
+                        md_text, report_id=report_id, api_base=self.api_base))
                 break
 
     def _show_batch_results(self):
@@ -666,11 +668,8 @@ class UploadTabMixin:
 
     def batch_download_all(self):
         """将所有成功处理的报告合并为一个 ZIP 下载"""
-        report_ids = [r["reportDir"] for r in self.batch_results
-                     if r.get("success") and r.get("reportDir")]
-        # 从完整路径提取目录名作为报告 ID
-        from pathlib import PurePath
-        report_ids = [PurePath(p).name for p in report_ids]
+        report_ids = [r["reportId"] for r in self.batch_results
+                     if r.get("success") and r.get("reportId")]
 
         if not report_ids:
             self.show_toast("没有可下载的报告")

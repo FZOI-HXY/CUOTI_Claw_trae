@@ -3,15 +3,17 @@ ReportsTabMixin - 报告中心标签页
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Dict, TYPE_CHECKING
+from urllib.parse import quote
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QFileDialog, QMessageBox, QCheckBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor
 
 from apps.desktop.workers.api_task import ApiTask
@@ -108,6 +110,9 @@ class ReportsTabMixin:
         self._selected_report_ids.clear()
         self._all_report_ids.clear()
 
+        # 收集需要计算大小的报告路径（行索引 -> 路径）
+        size_tasks: Dict[int, str] = {}
+
         self.reports_table.blockSignals(True)
         self.reports_table.setRowCount(len(reports))
         for i, r in enumerate(reports):
@@ -132,16 +137,11 @@ class ReportsTabMixin:
             self.reports_table.setItem(i, 3, md_item)
 
             report_path = r.get('path', '')
+            # 大小计算延后到后台线程，避免主线程 rglob+stat 阻塞 UI
             size_str = "-"
-            if report_path:
-                try:
-                    p = Path(report_path)
-                    if p.exists():
-                        total_sz = sum(f.stat().st_size for f in p.rglob('*') if f.is_file())
-                        size_str = self._format_size(total_sz)
-                except Exception:
-                    size_str = "-"
             self.reports_table.setItem(i, 4, QTableWidgetItem(size_str))
+            if report_path:
+                size_tasks[i] = report_path
 
             # 列 5: 操作按钮
             btn_widget = QWidget()
@@ -190,13 +190,50 @@ class ReportsTabMixin:
         self.report_select_all_cb.blockSignals(False)
         self._refresh_report_batch_del_state()
 
+        # 在后台线程计算报告大小，完成后通过 QTimer 回到主线程更新 UI
+        if size_tasks:
+            self._compute_report_sizes_async(size_tasks)
+
+    def _compute_report_sizes_async(self, size_tasks: Dict[int, str]):
+        """在后台线程计算报告目录大小，避免阻塞主线程 UI"""
+        format_fn = self._format_size
+
+        def _compute():
+            sizes: Dict[int, str] = {}
+            for row_idx, report_path in size_tasks.items():
+                try:
+                    p = Path(report_path)
+                    if p.exists():
+                        total_sz = sum(f.stat().st_size for f in p.rglob('*') if f.is_file())
+                        sizes[row_idx] = format_fn(total_sz)
+                    else:
+                        sizes[row_idx] = "-"
+                except Exception:
+                    sizes[row_idx] = "-"
+            # 回到主线程更新 UI
+            QTimer.singleShot(0, lambda: self._apply_report_sizes(sizes))
+
+        thread = threading.Thread(target=_compute, daemon=True)
+        thread.start()
+
+    def _apply_report_sizes(self, sizes: Dict[int, str]):
+        """在主线程中将计算好的大小应用到表格"""
+        for row_idx, size_str in sizes.items():
+            if row_idx < self.reports_table.rowCount():
+                item = self.reports_table.item(row_idx, 4)
+                if item is not None:
+                    item.setText(size_str)
+                else:
+                    self.reports_table.setItem(row_idx, 4, QTableWidgetItem(size_str))
+
     def view_report_content(self, report_id: str):
-        worker = ApiTask(self.api_base, "GET", f"/api/report/{report_id}")
+        worker = ApiTask(self.api_base, "GET", f"/api/report/{quote(report_id, safe='')}")
         def _on_done(data):
             content = data.get("content", "")
-            report_dir = data.get("path", "")
-            self.markdown_view.setHtml(self._render_markdown_html(content, report_dir=report_dir))
-            self.tab_widget.setCurrentIndex(0)
+            report_id = data.get("id", "")
+            self.markdown_view.setHtml(self._render_markdown_html(
+                content, report_id=report_id, api_base=self.api_base))
+            self.tab_widget.setCurrentIndex(self.TAB_UPLOAD)
             self.show_toast("报告已加载")
         worker.finished.connect(_on_done)
         worker.error.connect(lambda e: self.show_toast(f"加载报告失败: {e}"))
@@ -211,7 +248,8 @@ class ReportsTabMixin:
         if not save_path:
             return
 
-        worker = ApiTask(self.api_base, "GET", f"/api/report/{report_id}/download",
+        worker = ApiTask(self.api_base, "GET",
+                         f"/api/report/{quote(report_id, safe='')}/download",
                          raw_response=True)
         def _on_done(data: bytes):
             try:
@@ -234,13 +272,16 @@ class ReportsTabMixin:
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        worker = ApiTask(self.api_base, "DELETE", f"/api/report/{report_id}")
-        worker.finished.connect(lambda d: (
-            self.show_toast(f"报告 {report_id} 已删除"),
-            self.load_reports()
-        ))
+        worker = ApiTask(self.api_base, "DELETE",
+                         f"/api/report/{quote(report_id, safe='')}")
+        worker.finished.connect(lambda d, rid=report_id: self._on_report_deleted(rid))
         worker.error.connect(lambda e: self.show_toast(f"删除失败: {e}"))
         worker.start()
+
+    def _on_report_deleted(self, report_id: str):
+        """报告删除成功后的回调"""
+        self.show_toast(f"报告 {report_id} 已删除")
+        self.load_reports()
 
     # ═══════════════════════════════════════════════════════
     #  选择状态管理（基于内部集合，不依赖 cellWidget/selectionModel 查询）

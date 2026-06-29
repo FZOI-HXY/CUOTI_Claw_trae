@@ -289,8 +289,10 @@ class TestSubmitAPI:
         assert data["file_id"] == uploaded_file_id
 
     def test_submit_nonexistent_file(self, api_client):
-        """提交不存在的文件"""
-        resp = api_client.post("/api/submit/nonexistent_id")
+        """提交不存在的文件（使用合法格式的 file_id 触发 404）"""
+        # S01: file_id 必须是 32 位十六进制，使用合法格式但不存在的 ID
+        valid_format_id = "a" * 32
+        resp = api_client.post(f"/api/submit/{valid_format_id}")
         assert resp.status_code == 404
 
     def test_submit_returns_unique_task_ids(self, api_client, sample_image_bytes):
@@ -641,11 +643,11 @@ class TestErrorHandling:
         assert resp.status_code in (400, 422)
 
     def test_submit_invalid_file_id_format(self, api_client):
-        """无效 file_id 格式"""
-        # 特殊字符和短字符串
+        """无效 file_id 格式（S01: 路径遍历防护）"""
+        # 特殊字符和短字符串 — S01 后返回 400（格式校验失败）或 404/422（路由不匹配）
         for bad_id in ["../../etc/passwd", "<script>", "x", ""]:
             resp = api_client.post(f"/api/submit/{bad_id}")
-            assert resp.status_code in (404, 422), f"Expected 404/422 for '{bad_id}'"
+            assert resp.status_code in (400, 404, 422), f"Expected 400/404/422 for '{bad_id}'"
 
     def test_config_rejects_invalid_key(self, api_client):
         """配置忽略不存在的字段"""
@@ -678,3 +680,173 @@ class TestErrorHandling:
         """健康检查不需要认证"""
         resp = api_client.get("/api/health")
         assert resp.status_code == 200
+
+
+# ──────────────────────────────────────────────────
+# 10. 新增端点测试
+# ──────────────────────────────────────────────────
+
+@pytest.mark.integration
+class TestSubmitUrlAPI:
+    """测试通过 URL 提交任务"""
+
+    def test_submit_url_valid(self, api_client):
+        """通过 URL 提交有效任务"""
+        resp = api_client.post("/api/submit-url", json={
+            "fileUrl": "https://example.com/image.jpg",
+            "filename": "test.jpg",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert "task_id" in data
+        assert data["filename"] == "test.jpg"
+
+    def test_submit_url_internal_ip_rejected(self, api_client):
+        """URL 指向内网 IP 应被拒绝"""
+        resp = api_client.post("/api/submit-url", json={
+            "fileUrl": "https://192.168.1.1/image.jpg",
+            "filename": "test.jpg",
+        })
+        assert resp.status_code == 400
+
+    def test_submit_url_http_rejected(self, api_client):
+        """HTTP URL 应被拒绝（必须 HTTPS）"""
+        resp = api_client.post("/api/submit-url", json={
+            "fileUrl": "http://example.com/image.jpg",
+            "filename": "test.jpg",
+        })
+        assert resp.status_code == 400
+
+    def test_submit_url_missing_filename(self, api_client):
+        """缺少 filename 应仍能提交"""
+        resp = api_client.post("/api/submit-url", json={
+            "fileUrl": "https://example.com/image.jpg",
+        })
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+
+@pytest.mark.integration
+class TestBatchAPI:
+    """测试批量查询端点"""
+
+    def test_get_batch_results(self, api_client):
+        """批量获取任务结果"""
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_batch",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with patch.object(backend.paddle_service, "batch_get_results", new_callable=AsyncMock) as mb:
+            async def _mock_batch(*args, **kwargs):
+                return {
+                    "success": True,
+                    "results": [
+                        {"task_id": "job1", "status": "done"},
+                        {"task_id": "job2", "status": "done"},
+                    ],
+                }
+            mb.side_effect = _mock_batch
+
+            client = TestClient(backend.app)
+            resp = client.get("/api/batch/test_batch_id")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is True
+            assert data["count"] == 2
+            assert len(data["results"]) == 2
+
+
+@pytest.mark.integration
+class TestUploadBatchAPI:
+    """测试批量上传端点"""
+
+    def test_upload_batch_multiple_files(self, api_client, sample_image_bytes):
+        """批量上传多个文件"""
+        resp = api_client.post("/api/upload/batch", files=[
+            ("files", ("batch1.jpg", io.BytesIO(sample_image_bytes), "image/jpeg")),
+            ("files", ("batch2.jpg", io.BytesIO(sample_image_bytes), "image/jpeg")),
+            ("files", ("batch3.jpg", io.BytesIO(sample_image_bytes), "image/jpeg")),
+        ])
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 3
+        assert data["succeeded"] == 3
+        assert data["failed"] == 0
+
+    def test_upload_batch_empty(self, api_client):
+        """空文件列表应返回错误"""
+        resp = api_client.post("/api/upload/batch", files=[])
+        assert resp.status_code in (400, 422)
+
+    def test_upload_batch_mixed_success_fail(self, api_client, sample_image_bytes):
+        """混合成功和失败的批量上传"""
+        resp = api_client.post("/api/upload/batch", files=[
+            ("files", ("valid.jpg", io.BytesIO(sample_image_bytes), "image/jpeg")),
+            ("files", ("invalid.exe", io.BytesIO(b"not_an_image"), "application/octet-stream")),
+            ("files", ("valid2.jpg", io.BytesIO(sample_image_bytes), "image/jpeg")),
+        ])
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 3
+        assert data["succeeded"] == 2
+        assert data["failed"] == 1
+
+
+@pytest.mark.integration
+class TestUploadAndProcessAPI:
+    """测试上传并处理端点"""
+
+    def test_upload_and_process(self, temp_dir, sample_image_bytes):
+        """一步完成上传和处理"""
+        from apps.web.api.config import settings
+        original_upload = settings.upload_dir
+        original_output = settings.output_dir
+        original_log = settings.log_dir
+        settings.upload_dir = str(temp_dir / "uploads")
+        settings.output_dir = str(temp_dir / "output")
+        settings.log_dir = str(temp_dir / "logs")
+        settings.paddleocr_api_key = "test_token"
+        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
+            Path(d).mkdir(parents=True, exist_ok=True)
+
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "backend_main_uap",
+                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+            )
+            backend = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(backend)
+            from apps.web.api.services.task_service import task_service
+            task_service._task_store.clear()
+            task_service._history.clear()
+
+            with patch.object(backend.paddle_service, "submit_and_poll", new_callable=AsyncMock) as ms:
+                async def _mock_submit_poll(*args, **kwargs):
+                    return {
+                        "success": True,
+                        "markdown_text": "# Test Result\n\nContent.",
+                        "images": {},
+                        "processing_time": 2.5,
+                    }
+                ms.side_effect = _mock_submit_poll
+
+                client = TestClient(backend.app)
+                resp = client.post("/api/upload-and-process", files={
+                    "file": ("test.jpg", io.BytesIO(sample_image_bytes), "image/jpeg")
+                })
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is True
+                assert "markdown_text" in data
+                assert "file_id" in data
+        finally:
+            settings.upload_dir = original_upload
+            settings.output_dir = original_output
+            settings.log_dir = original_log
