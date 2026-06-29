@@ -64,6 +64,8 @@ apps/web/api/uploads/*
 apps/web/api/output/*
 !apps/web/api/uploads/.gitkeep
 !apps/web/api/output/.gitkeep
+uploads/*
+!uploads/.gitkeep
 
 # ── NAS 配置（含密码） ──
 apps/desktop/nas_config.json
