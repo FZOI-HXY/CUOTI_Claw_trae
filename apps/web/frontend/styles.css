@@ -16,7 +16,7 @@
     --border-accent: rgba(245, 158, 11, 0.3);
     --text-primary: #e8ecf1;
     --text-secondary: #8b95a8;
-    --text-muted: #5a6478;
+    --text-muted: #7a8595;
     --accent: #f59e0b;
     --accent-glow: rgba(245, 158, 11, 0.25);
     --accent-hover: #fbbf24;
@@ -1151,7 +1151,7 @@ body {
 }
 
 .checkbox-label {
-    display: flex !important;
+    display: flex;
     align-items: center;
     gap: 8px;
     cursor: pointer;

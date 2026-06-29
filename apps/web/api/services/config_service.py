@@ -58,10 +58,11 @@ def save_env_file(config_data: dict, env_path: Path) -> bool:
             str_value = str(value).lower() if isinstance(value, bool) else str(value)
 
             # 查找并更新对应行
+            # M04: 仅更新未注释的行，被注释的行保持原样
             found = False
             for i, line in enumerate(lines):
                 stripped = line.strip()
-                if stripped.startswith(f"{env_key}=") or stripped.startswith(f"# {env_key}="):
+                if stripped.startswith(f"{env_key}="):
                     lines[i] = f"{env_key}={str_value}"
                     found = True
                     break

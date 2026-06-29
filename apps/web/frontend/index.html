@@ -20,7 +20,7 @@
         startup: { typeset: false }
     };
     </script>
-    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js" integrity="sha384-Wuix6BuhrWbjDBs24bXrjf4ZQ5aFeFWBuKkFekO2t8xFU0iNaLQfp2K6/1Nxveei" crossorigin="anonymous"></script>
 </head>
 <body>
     <!-- 粒子背景 -->
@@ -39,7 +39,7 @@
             <h1 class="brand-title" translate="no">Claw<span class="brand-subtitle">错题管理</span></h1>
         </div>
         <nav class="header-nav">
-            <button class="nav-btn active" data-view="upload">
+            <button class="nav-btn active" data-view="upload" aria-current="page">
                 <span class="nav-icon" aria-hidden="true">&#8593;</span>
                 上传处理
             </button>
@@ -100,7 +100,7 @@
                 <div class="preview-card single-preview">
                     <h3 class="preview-title">当前文件</h3>
                     <div class="preview-image-wrap">
-                        <img id="preview-original" src="" alt="预览" width="600" height="375">
+                        <img id="preview-original" alt="预览" width="600" height="375">
                     </div>
                 </div>
             </div>

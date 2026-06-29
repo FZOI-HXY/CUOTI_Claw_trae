@@ -9,7 +9,7 @@
 import os
 import sys
 import shutil
-import socket
+import secrets
 import threading
 import time
 import urllib.request
@@ -18,10 +18,7 @@ import urllib.error
 import uvicorn
 
 
-# ---- PyInstaller 兼容性 ---- 
-
-# 设置 socket 默认超时，防止 DNS 解析在 PyInstaller 中无限挂起
-socket.setdefaulttimeout(10)
+# ---- PyInstaller 兼容性 ----
 
 # Windows 下显式设置 asyncio 事件循环策略（避免 ProactorEventLoop 兼容问题）
 if sys.platform == "win32":
@@ -94,6 +91,12 @@ def _setup_environment(data_dir: str):
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
+    # S06: 生成随机认证 token，设置到环境变量
+    # Settings 初始化时会读取 CLAW_AUTH_TOKEN，main.py 的认证中间件会校验此 token。
+    # 桌面端 ApiTask 会从环境变量读取 token 并添加到请求头 X-Claw-Token。
+    if not os.environ.get("CLAW_AUTH_TOKEN"):
+        os.environ["CLAW_AUTH_TOKEN"] = secrets.token_urlsafe(32)
+
 
 def _read_env_key(env_path: str) -> str:
     """读取 .env 文件中的 PADDLEOCR_API_KEY 值"""
@@ -121,16 +124,12 @@ def _ensure_env_file(data_dir: str):
         source_env = os.path.join(project_root, "apps", "web", "api", ".env")
         if os.path.exists(source_env):
             return  # 源码 .env 存在，直接使用
-        # 源码 .env 不存在（异常情况），创建默认
-        os.makedirs(os.path.dirname(source_env), exist_ok=True)
-        with open(source_env, "w", encoding="utf-8") as f:
-            f.write("# Claw 错题管理系统 配置文件\n")
-            f.write('PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs\n')
-            f.write('PADDLEOCR_API_KEY=\n')
-            f.write('PADDLEOCR_MODEL=PP-OCRv5\n')
-            f.write('HOST=127.0.0.1\n')
-            f.write('PORT=8500\n')
-            f.write('DEBUG=false\n')
+        # 源码 .env 不存在，报错提示而非自动创建
+        print(
+            f"[backend_server] 错误: 开发模式下 .env 文件不存在: {source_env}\n"
+            f"请手动创建配置文件（可参考 .env.example 或从打包版本复制）。",
+            file=sys.stderr, flush=True
+        )
         return
 
     # 以下为 frozen 模式逻辑
@@ -243,10 +242,20 @@ def start_server(host: str = "127.0.0.1", port: int = 8500) -> bool:
 
 
 def stop_server():
-    """停止内嵌后端服务器"""
-    global _server
-    if _server:
-        _server.should_exit = True
+    """停止内嵌后端服务器
+
+    设置 should_exit 标志后等待服务器线程结束（最长 5 秒），
+    然后清空全局引用，避免残留状态影响后续启动。
+    """
+    global _server, _server_thread
+    srv = _server
+    thr = _server_thread
+    if srv:
+        srv.should_exit = True
+    if thr is not None and thr.is_alive():
+        thr.join(timeout=5)
+    _server = None
+    _server_thread = None
 
 
 def is_running() -> bool:

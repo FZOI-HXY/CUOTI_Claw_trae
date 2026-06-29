@@ -3,7 +3,9 @@
 
 定义所有 API 端点的输入输出结构，供 FastAPI 自动文档和验证使用。
 """
-from pydantic import BaseModel, Field
+import re
+from enum import Enum
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 
 
@@ -40,7 +42,6 @@ class ConfigResponse(BaseModel):
     paddleocr_api_key: str = ""
     paddleocr_model: str = ""
     api_key_configured: bool = False
-    api_key_prefix: str = ""
     host: str = ""
     port: int = 8500
     upload_dir: str = ""
@@ -49,22 +50,66 @@ class ConfigResponse(BaseModel):
     log_level: str = "INFO"
 
 
+class LogLevel(str, Enum):
+    """允许的日志级别"""
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+
+
+def _validate_no_traversal(value: Optional[str]) -> Optional[str]:
+    """校验路径字段不含路径遍历符 ``..``"""
+    if value is not None and ".." in value:
+        raise ValueError("路径不允许包含 '..'")
+    return value
+
+
 class ConfigUpdateRequest(BaseModel):
     paddleocr_api_url: Optional[str] = None
     paddleocr_api_key: Optional[str] = None
     paddleocr_model: Optional[str] = None
     host: Optional[str] = None
-    port: Optional[int] = None
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
     debug: Optional[bool] = None
     upload_dir: Optional[str] = None
     output_dir: Optional[str] = None
     log_dir: Optional[str] = None
     max_upload_size_mb: Optional[int] = None
-    log_level: Optional[str] = None
+    log_level: Optional[LogLevel] = None
     poll_interval: Optional[int] = None
     poll_max_retries: Optional[int] = None
     rate_limit_requests: Optional[int] = None
     rate_limit_window: Optional[int] = None
+
+    @field_validator("upload_dir", "output_dir", "log_dir")
+    @classmethod
+    def validate_paths_no_traversal(cls, v: Optional[str]) -> Optional[str]:
+        """路径字段禁止包含 ``..``（防止路径遍历攻击）"""
+        return _validate_no_traversal(v)
+
+    @field_validator("host")
+    @classmethod
+    def validate_host_format(cls, v: Optional[str]) -> Optional[str]:
+        """host 必须是 IP 地址或 localhost"""
+        if v is None:
+            return v
+        # 允许 IPv4 / IPv6 / localhost
+        if v == "localhost":
+            return v
+        ipv4_re = re.compile(
+            r'^(\d{1,3}\.){3}\d{1,3}$'
+        )
+        if ipv4_re.match(v):
+            parts = v.split(".")
+            if all(0 <= int(p) <= 255 for p in parts):
+                return v
+            raise ValueError("无效的 IPv4 地址")
+        # IPv6 简单校验（含冒号）
+        if ":" in v and all(c in "0123456789abcdefABCDEF:." for c in v):
+            return v
+        raise ValueError("host 必须是有效的 IP 地址或 localhost")
 
 
 # ============ 上传 ============
@@ -162,7 +207,12 @@ class ReportListResponse(BaseModel):
     reports: List[ReportItem] = Field(default_factory=list)
 
 
-# ============ 批量下载 ============
+# ============ 批量操作 ============
+
+class BatchDeleteRequest(BaseModel):
+    """批量删除请求（历史记录/报告通用）"""
+    ids: List[str] = Field(default_factory=list)
+
 
 class BatchDownloadRequest(BaseModel):
     report_ids: List[str] = Field(default_factory=list)

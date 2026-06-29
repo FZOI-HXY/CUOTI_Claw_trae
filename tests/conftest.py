@@ -223,7 +223,7 @@ def sample_history_items():
             "success": True,
             "processing_time": 12.5,
             "images_count": 7,
-            "report_dir": "output/rpt_abc123",
+            "report_id": "rpt_abc123",
             "file_id": "abc123",
         },
         {
@@ -233,7 +233,7 @@ def sample_history_items():
             "success": False,
             "processing_time": 0,
             "images_count": 0,
-            "report_dir": "",
+            "report_id": "",
             "file_id": "def456",
             "error": "OCR recognition timeout",
         },

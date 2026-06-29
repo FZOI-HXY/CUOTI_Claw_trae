@@ -50,6 +50,7 @@ def extract_ocr_result(poll_result: Dict[str, Any]) -> Dict[str, Any]:
         "images": {},
         "layout_image": None,
         "layout_items": [],
+        "error": None,
     }
 
     try:
@@ -159,6 +160,8 @@ def extract_ocr_result(poll_result: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"解析JSON结果失败: {e}", exc_info=True)
+        # M06: 在返回值中增加 error 字段，避免静默吞异常
+        extracted["error"] = str(e)
 
     return extracted
 

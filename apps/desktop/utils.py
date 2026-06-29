@@ -5,7 +5,7 @@ Standalone 工具函数
 """
 import re
 from html import escape as _html_escape
-from pathlib import Path
+from urllib.parse import quote
 
 
 def _escape_text(text: str) -> str:
@@ -16,14 +16,14 @@ def _escape_text(text: str) -> str:
     return _html_escape(text, quote=True)
 
 
-def render_markdown_html(md: str, report_dir: str = "", api_base: str = "") -> str:
+def render_markdown_html(md: str, report_id: str = "", api_base: str = "") -> str:
     """
     将 Markdown 转换为基本 HTML（用于 QTextEdit 显示）
 
     Args:
         md: Markdown 文本
-        report_dir: 报告目录的绝对路径（用于将相对图片路径转为 file:// URL）
-        api_base: API 基础地址（备用方案，通过 API 获取图片）
+        report_id: 报告 ID（目录名，用于通过 API 解析图片路径）
+        api_base: API 基础地址（通过 API 获取图片）
     """
     # 输入大小保护：拒绝超长文本，防止正则回溯爆炸
     MAX_MD_LENGTH = 5 * 1024 * 1024  # 5MB
@@ -84,18 +84,11 @@ def render_markdown_html(md: str, report_dir: str = "", api_base: str = "") -> s
         if img_path.startswith(("http://", "https://", "data:", "file://")):
             safe_src = _escape_text(img_path)
             return _make_placeholder(f'<img src="{safe_src}" alt="{alt}" width="34%" />')
-        # 优先用 report_dir 解析为本地 file:// 路径
-        if report_dir:
-            full = (Path(report_dir) / img_path).resolve()
-            if full.exists():
-                # 用 as_uri() 生成跨平台兼容的 file:// URL（Windows 下自动转换反斜杠）
-                safe_src = _escape_text(full.as_uri())
-                return _make_placeholder(f'<img src="{safe_src}" alt="{alt}" width="34%" />')
-        # 其次尝试通过 API 获取（需要 report_id）
-        if api_base and report_dir:
-            from pathlib import PurePath
-            report_id = PurePath(report_dir).name
-            api_url = f"{api_base.rstrip('/')}/api/report/{report_id}/image/{img_path}"
+        # M02: 通过 API 解析图片路径（report_id 为目录名，不暴露服务器文件系统路径）
+        if api_base and report_id:
+            # 对 img_path 进行 URL 编码，防止特殊字符破坏 URL
+            encoded_img_path = quote(img_path, safe='')
+            api_url = f"{api_base.rstrip('/')}/api/report/{quote(report_id, safe='')}/image/{encoded_img_path}"
             safe_src = _escape_text(api_url)
             return _make_placeholder(f'<img src="{safe_src}" alt="{alt}" width="34%" />')
         # 都不行就保留原样，显示 alt 文本
@@ -112,7 +105,7 @@ def render_markdown_html(md: str, report_dir: str = "", api_base: str = "") -> s
     html = re.sub(r'^# (.+)$', r'<h1>\1</h1>', html, flags=re.MULTILINE)
     html = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', html)
     html = re.sub(r'\*(.+?)\*', r'<em>\1</em>', html)
-    html = re.sub(r'`([^`]+)`', lambda m: f'<code>{_escape_text(m.group(1))}</code>', html)
+    html = re.sub(r'`([^`]+)`', lambda m: f'<code>{m.group(1)}</code>', html)
     html = re.sub(r'^&gt; (.+)$', r'<blockquote>\1</blockquote>', html, flags=re.MULTILINE)
     html = re.sub(r'^- (.+)$', r'<li>\1</li>', html, flags=re.MULTILINE)
     html = re.sub(r'^---$', r'<hr>', html, flags=re.MULTILINE)

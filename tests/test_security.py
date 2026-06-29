@@ -377,14 +377,14 @@ class TestSQLiteWAL:
 
     def test_wal_mode_enabled(self, temp_dir, monkeypatch):
         """数据库应启用 WAL 模式"""
-        # 使用 monkeypatch 修改全局 DB_PATH，避免影响真实数据库
+        # L23: 使用 monkeypatch 修改 _get_db_path，避免影响真实数据库
         import sys
         ts_module = sys.modules.get("apps.web.api.services.task_service")
         if ts_module is None:
             import importlib
             ts_module = importlib.import_module("apps.web.api.services.task_service")
         db_path = temp_dir / "test_wal.db"
-        monkeypatch.setattr(ts_module, "DB_PATH", db_path)
+        monkeypatch.setattr(ts_module, "_get_db_path", lambda: db_path)
 
         svc = ts_module.TaskService()
         db = svc._ensure_db()
@@ -409,7 +409,7 @@ class TestSQLiteWAL:
             import importlib
             ts_module = importlib.import_module("apps.web.api.services.task_service")
         db_path = temp_dir / "test_timeout.db"
-        monkeypatch.setattr(ts_module, "DB_PATH", db_path)
+        monkeypatch.setattr(ts_module, "_get_db_path", lambda: db_path)
 
         svc = ts_module.TaskService()
         db = svc._ensure_db()
@@ -618,3 +618,284 @@ class TestMarkdownHtmlEscape:
         html = render_markdown_html("")
         assert "<html>" in html
         assert "</html>" in html
+
+
+# ──────────────────────────────────────────────────
+# 7. 报告删除安全
+# ──────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestReportDeleteSecurity:
+    """测试报告删除的安全防护"""
+
+    def test_safe_report_dir_rejects_file(self):
+        """_safe_report_dir 应拒绝普通文件（仅允许目录）"""
+        from pathlib import Path
+        from fastapi import HTTPException
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir) / "output"
+            output_dir.mkdir()
+            
+            test_file = output_dir / "test_file.txt"
+            test_file.write_text("test content")
+            
+            def _test_safe_report_dir(report_id: str) -> Path:
+                if not report_id:
+                    raise HTTPException(status_code=400, detail="无效的报告 ID")
+                report_dir = (output_dir / report_id).resolve()
+                try:
+                    report_dir.relative_to(output_dir)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
+                if report_dir.exists() and not report_dir.is_dir():
+                    raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
+                return report_dir
+            
+            with pytest.raises(HTTPException) as exc_info:
+                _test_safe_report_dir("test_file.txt")
+            assert exc_info.value.status_code == 400
+
+    def test_safe_report_dir_allows_directory(self):
+        """_safe_report_dir 应允许有效的报告目录"""
+        from pathlib import Path
+        from fastapi import HTTPException
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir) / "output"
+            output_dir.mkdir()
+            
+            test_dir = output_dir / "valid_report_dir"
+            test_dir.mkdir()
+            
+            def _test_safe_report_dir(report_id: str) -> Path:
+                if not report_id:
+                    raise HTTPException(status_code=400, detail="无效的报告 ID")
+                report_dir = (output_dir / report_id).resolve()
+                try:
+                    report_dir.relative_to(output_dir)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
+                if report_dir.exists() and not report_dir.is_dir():
+                    raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
+                return report_dir
+            
+            result = _test_safe_report_dir("valid_report_dir")
+            assert result == test_dir.resolve()
+
+
+# ──────────────────────────────────────────────────
+# 8. 工具函数测试
+# ──────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestUtils:
+    """测试桌面端工具函数"""
+
+    def test_format_size_bytes(self):
+        """字节单位格式化"""
+        from utils import format_size
+        assert format_size(0) == "0 B"
+        assert format_size(512) == "512 B"
+        assert format_size(1023) == "1023 B"
+
+    def test_format_size_kb(self):
+        """KB 单位格式化"""
+        from utils import format_size
+        assert format_size(1024) == "1.0 KB"
+        assert format_size(2048) == "2.0 KB"
+        assert format_size(1536) == "1.5 KB"
+
+    def test_format_size_mb(self):
+        """MB 单位格式化"""
+        from utils import format_size
+        assert format_size(1024 * 1024) == "1.0 MB"
+        assert format_size(5 * 1024 * 1024) == "5.0 MB"
+        assert format_size(1024 * 1024 + 512 * 1024) == "1.5 MB"
+
+    def test_format_size_large(self):
+        """大文件格式化"""
+        from utils import format_size
+        assert format_size(10 * 1024 * 1024) == "10.0 MB"
+
+
+# ──────────────────────────────────────────────────
+# 9. 安全工具函数测试
+# ──────────────────────────────────────────
+
+@pytest.mark.unit
+class TestSecurityUtils:
+    """测试 main.py 中的安全工具函数"""
+
+    def test_extract_safe_extension(self):
+        """_extract_safe_extension 应安全提取扩展名"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_sec_ext",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        assert backend._extract_safe_extension("test.jpg") == ".jpg"
+        assert backend._extract_safe_extension("test.png") == ".png"
+        assert backend._extract_safe_extension("../../etc/passwd.exe") == ".exe"
+        assert backend._extract_safe_extension("no_extension") == ".png"
+        assert backend._extract_safe_extension("") == ".png"
+        assert backend._extract_safe_extension("file.with.multiple.dots.txt") == ".txt"
+
+    def test_validate_file_id_valid(self):
+        """_validate_file_id 应接受有效格式"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_fid",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        valid_id = "a" * 32
+        backend._validate_file_id(valid_id)
+
+    def test_validate_file_id_invalid(self):
+        """_validate_file_id 应拒绝无效格式"""
+        import importlib.util
+        from fastapi import HTTPException
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_fid2",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        for bad_id in ["", "short", "a" * 31, "a" * 33, "invalid_chars!@#", "../../etc/passwd"]:
+            with pytest.raises(HTTPException) as exc_info:
+                backend._validate_file_id(bad_id)
+            assert exc_info.value.status_code == 400
+
+    def test_is_internal_ip(self):
+        """_is_internal_ip 应正确识别内网地址"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_internal",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        assert backend._is_internal_ip("localhost") is True
+        assert backend._is_internal_ip("127.0.0.1") is True
+        assert backend._is_internal_ip("10.0.0.1") is True
+        assert backend._is_internal_ip("192.168.1.1") is True
+        assert backend._is_internal_ip("172.16.0.1") is True
+        assert backend._is_internal_ip("0.0.0.0") is True
+        assert backend._is_internal_ip("169.254.1.1") is True
+        assert backend._is_internal_ip("::1") is True
+
+        assert backend._is_internal_ip("8.8.8.8") is False
+        assert backend._is_internal_ip("example.com") is False
+        assert backend._is_internal_ip("1.2.3.4") is False
+
+    def test_validate_file_url_valid(self):
+        """_validate_file_url 应接受有效 URL"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_url",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        backend._validate_file_url("https://example.com/image.jpg")
+        backend._validate_file_url("https://cdn.example.com/path/to/file.png")
+
+    def test_validate_file_url_invalid(self):
+        """_validate_file_url 应拒绝无效 URL"""
+        import importlib.util
+        from fastapi import HTTPException
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_url2",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with pytest.raises(HTTPException) as exc_info:
+            backend._validate_file_url("http://example.com/image.jpg")
+        assert exc_info.value.status_code == 400
+
+        with pytest.raises(HTTPException) as exc_info:
+            backend._validate_file_url("https://localhost/image.jpg")
+        assert exc_info.value.status_code == 400
+
+        with pytest.raises(HTTPException) as exc_info:
+            backend._validate_file_url("https://127.0.0.1/image.jpg")
+        assert exc_info.value.status_code == 400
+
+        with pytest.raises(HTTPException) as exc_info:
+            backend._validate_file_url("")
+        assert exc_info.value.status_code == 400
+
+    def test_check_magic_bytes_valid(self):
+        """_check_magic_bytes 应接受有效图片格式"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_magic",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        backend._check_magic_bytes(b"\xff\xd8\xff\x00")
+        backend._check_magic_bytes(b"\x89PNG\r\n")
+        backend._check_magic_bytes(b"%PDF-")
+        backend._check_magic_bytes(b"BM\x00\x00")
+
+    def test_check_magic_bytes_invalid(self):
+        """_check_magic_bytes 应拒绝无效格式"""
+        import importlib.util
+        from fastapi import HTTPException
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_magic2",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with pytest.raises(HTTPException) as exc_info:
+            backend._check_magic_bytes(b"invalid content")
+        assert exc_info.value.status_code == 400
+
+        with pytest.raises(HTTPException) as exc_info:
+            backend._check_magic_bytes(b"")
+        assert exc_info.value.status_code == 400
+
+        with pytest.raises(HTTPException) as exc_info:
+            backend._check_magic_bytes(b"\x00\x00\x00")
+        assert exc_info.value.status_code == 400
+
+    def test_safe_report_image_path(self):
+        """_safe_report_image_path 应防止路径穿越"""
+        import importlib.util
+        from fastapi import HTTPException
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_img",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            report_dir = Path(tmp_dir) / "report"
+            report_dir.mkdir()
+
+            result = backend._safe_report_image_path(report_dir, "valid_image.png")
+            assert result == report_dir / "valid_image.png"
+
+            with pytest.raises(HTTPException) as exc_info:
+                backend._safe_report_image_path(report_dir, "../malicious.png")
+            assert exc_info.value.status_code == 400
+
+            with pytest.raises(HTTPException) as exc_info:
+                backend._safe_report_image_path(report_dir, "/etc/passwd")
+            assert exc_info.value.status_code == 400

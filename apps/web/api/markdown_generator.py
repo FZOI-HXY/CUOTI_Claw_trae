@@ -43,6 +43,24 @@ class MarkdownGenerator:
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _escape_markdown_filename(filename: str) -> str:
+        """M31: 转义文件名中的 Markdown 特殊字符
+
+        在 Markdown 表格中使用时，以下字符需要转义：
+          | → \\|
+          ` → \\`
+          < → &lt;
+          > → &gt;
+        """
+        if not filename:
+            return ""
+        result = filename.replace("|", "\\|")
+        result = result.replace("`", "\\`")
+        result = result.replace("<", "&lt;")
+        result = result.replace(">", "&gt;")
+        return result
+
     def build_report(
         self,
         original_filename: str,
@@ -83,7 +101,7 @@ class MarkdownGenerator:
         lines.append(f"| 属性 | 值 |")
         lines.append(f"|------|-----|")
         lines.append(f"| **生成时间** | {now.strftime('%Y-%m-%d %H:%M:%S')} |")
-        lines.append(f"| **原始文件** | {original_filename} |")
+        lines.append(f"| **原始文件** | {self._escape_markdown_filename(original_filename)} |")
         lines.append(f"| **处理耗时** | {processing_time}s |")
         lines.append(f"| **内嵌图片** | {len(images)} 张 |")
         lines.append(f"| **版面区域** | {len(layout_items) if layout_items else 0} 个 |")
@@ -179,7 +197,7 @@ class MarkdownGenerator:
         lines.append("| 属性 | 值 |")
         lines.append("|------|-----|")
         lines.append(f"| **生成时间** | {now.strftime('%Y-%m-%d %H:%M:%S')} |")
-        lines.append(f"| **原始文件** | {original_filename} |")
+        lines.append(f"| **原始文件** | {self._escape_markdown_filename(original_filename)} |")
         lines.append(f"| **处理耗时** | {processing_time}s |")
         lines.append(f"| **版面区域** | {len(layout_items)} 个 |")
         lines.append("")
@@ -513,7 +531,14 @@ class MarkdownGenerator:
 
             # 4. 保存原始上传文件（保留原始扩展名，PDF 等非图片格式不被强制改为 .png）
             if original_image_data:
-                orig_ext = Path(original_filename).suffix or ".png"
+                # L21: 限制扩展名白名单，防止任意扩展名写入
+                _allowed_orig_exts = {
+                    ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff",
+                    ".tif", ".gif", ".pdf",
+                }
+                orig_ext = Path(original_filename).suffix.lower()
+                if orig_ext not in _allowed_orig_exts:
+                    orig_ext = ".png"
                 orig_path = report_dir / f"original{orig_ext}"
                 def _write_bytes(p: Path, d: bytes):
                     with open(p, "wb") as f:

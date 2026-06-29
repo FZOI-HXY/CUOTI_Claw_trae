@@ -296,8 +296,9 @@ class PaddleOCRService:
 
             if not job_id:
                 error_msg = self._parse_error(result)
+                # S16: 仅记录状态码和错误消息，不记录完整 result（防止敏感信息泄露）
                 logger.error(
-                    f"提交失败 [{filename}]: {error_msg}, 完整响应: {result}"
+                    f"提交失败 [{filename}]: {error_msg}"
                 )
                 raise RuntimeError(f"API 返回异常: {error_msg}")
 
@@ -496,7 +497,12 @@ class PaddleOCRService:
                             f"第{attempt}次, running {extracted}/{total} 页"
                         )
 
-                        if extracted == last_extracted and total != "?":
+                        # M07: 类型安全检查 — extracted/total 可能为字符串 "?"
+                        # 仅当两者均为 int 时才进行卡死检测比较
+                        if (isinstance(extracted, int)
+                                and isinstance(last_extracted, int)
+                                and extracted == last_extracted
+                                and isinstance(total, int)):
                             stuck_count += 1
                         else:
                             stuck_count = 0

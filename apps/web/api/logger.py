@@ -55,5 +55,19 @@ def setup_logger(name: str) -> logging.Logger:
     return logger
 
 
+def update_log_level(level: str) -> None:
+    """L24: 动态更新所有已注册 logger 的日志级别
+
+    在运行时通过 API 修改 log_level 后调用此函数，使新级别立即生效。
+    """
+    numeric_level = getattr(logging, level.upper(), logging.INFO)
+    # 更新 root logger 及所有子 logger
+    root = logging.getLogger()
+    root.setLevel(numeric_level)
+    for name in list(root.manager.loggerDict.keys()):
+        lg = logging.getLogger(name)
+        lg.setLevel(numeric_level)
+
+
 # 应用主日志
 logger = setup_logger("MistakeManager")

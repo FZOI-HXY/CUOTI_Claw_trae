@@ -146,6 +146,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+    # 本地认证 token（由桌面端 backend_server.py 生成并设置到环境变量）
+    # 为空时表示不启用认证（开发模式/测试模式）
+    claw_auth_token: str = ""
+
     @field_validator("max_upload_size_mb")
     @classmethod
     def validate_max_upload_size(cls, v: int) -> int:
@@ -187,11 +191,22 @@ class Settings(BaseSettings):
         return v
 
     def _resolve_path(self, dir_path: str) -> Path:
-        """解析路径，支持 CLAW_DATA_DIR 环境变量作为根目录"""
+        """解析路径，支持 CLAW_DATA_DIR 环境变量作为根目录
+
+        安全措施：
+          - 禁止路径包含 ``..``（防止路径遍历攻击）
+          - 使用 ``removeprefix("./")`` 替代 ``lstrip("./")``（lstrip 会误删路径中的合法字符）
+        """
+        if ".." in dir_path:
+            raise ValueError(f"路径不允许包含 '..': {dir_path}")
         # 使用自动发现的数据目录（不依赖 CLAW_DATA_DIR 是否被外部设置）
         if not os.path.isabs(dir_path):
-            return Path(_RESOLVED_DATA_DIR) / dir_path.lstrip("./")
+            return Path(_RESOLVED_DATA_DIR) / dir_path.removeprefix("./")
         return Path(dir_path)
+
+    def get_db_path(self) -> Path:
+        """动态获取 SQLite 数据库路径（始终基于当前 output_dir 解析）"""
+        return self.get_output_path() / "processing_history.db"
 
     def get_upload_path(self) -> Path:
         path = self._resolve_path(self.upload_dir)

@@ -3,8 +3,8 @@ HistoryTabMixin - 处理历史记录标签页
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, TYPE_CHECKING
+from urllib.parse import quote
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -229,8 +229,7 @@ class HistoryTabMixin:
                 btn_layout.setContentsMargins(6, 4, 6, 4)
                 btn_layout.setSpacing(8)
 
-                report_dir = item.get('report_dir', '')
-                report_id = Path(report_dir).name if report_dir else ''
+                report_id = item.get('report_id', '')
                 if report_id:
                     view_btn = QPushButton("查看")
                     view_btn.setMinimumWidth(60)
@@ -288,13 +287,16 @@ class HistoryTabMixin:
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        worker = ApiTask(self.api_base, "DELETE", f"/api/history/{history_id}")
-        worker.finished.connect(lambda d: (
-            self.show_toast(f"记录 #{history_id} 已删除"),
-            self.load_history()
-        ))
+        worker = ApiTask(self.api_base, "DELETE",
+                         f"/api/history/{quote(history_id, safe='')}")
+        worker.finished.connect(lambda d, hid=history_id: self._on_history_deleted(hid))
         worker.error.connect(lambda e: self.show_toast(f"删除失败: {e}"))
         worker.start()
+
+    def _on_history_deleted(self, history_id: str):
+        """历史记录删除成功后的回调"""
+        self.show_toast(f"记录 #{history_id} 已删除")
+        self.load_history()
 
     def batch_delete_history(self):
         if not self._selected_ids:
@@ -317,9 +319,13 @@ class HistoryTabMixin:
 
         worker = ApiTask(self.api_base, "POST", "/api/history/batch-delete",
                          json_data={"ids": history_ids})
-        worker.finished.connect(lambda d: (
-            self.show_toast(d.get("message", f"已删除 {len(history_ids)} 条记录")),
-            self.load_history()
-        ))
+        worker.finished.connect(
+            lambda d, cnt=len(history_ids): self._on_history_batch_deleted(d, cnt))
         worker.error.connect(lambda e: self.show_toast(f"批量删除失败: {e}"))
         worker.start()
+
+    def _on_history_batch_deleted(self, data: dict, count: int):
+        """批量删除历史记录成功后的回调"""
+        msg = data.get("message") if isinstance(data, dict) else None
+        self.show_toast(msg or f"已删除 {count} 条记录")
+        self.load_history()
