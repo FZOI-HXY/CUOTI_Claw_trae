@@ -227,3 +227,200 @@ class TestReportFilenameSanitization:
         )
         # 不应崩溃，正常返回报告
         assert isinstance(result, str)
+
+
+@pytest.mark.unit
+class TestImageDataResolution:
+    """测试图片数据解析"""
+
+    def test_resolve_base64_data_uri(self):
+        """解析 base64 data URI"""
+        import base64
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        img_data = b"test image data"
+        b64_str = base64.b64encode(img_data).decode()
+        data_uri = f"data:image/png;base64,{b64_str}"
+
+        result = MarkdownGenerator._resolve_image_data(data_uri)
+        assert result == img_data
+
+    def test_resolve_plain_base64(self):
+        """解析纯 base64 字符串"""
+        import base64
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        img_data = b"test plain base64"
+        b64_str = base64.b64encode(img_data).decode()
+
+        result = MarkdownGenerator._resolve_image_data(b64_str)
+        assert result == img_data
+
+    def test_resolve_empty_string(self):
+        """空字符串应返回 None"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        result = MarkdownGenerator._resolve_image_data("")
+        assert result is None
+
+    def test_resolve_invalid_base64(self):
+        """无效 base64 应返回 None"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        result = MarkdownGenerator._resolve_image_data("not valid base64!!!")
+        assert result is None
+
+
+@pytest.mark.unit
+class TestImagePathReplacement:
+    """测试图片路径替换"""
+
+    def test_replace_image_ref_simple(self):
+        """替换简单的图片引用"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        mg = MarkdownGenerator(output_dir=Path("/tmp"))
+        images = {"img_0": "data:image/png;base64,test"}
+
+        md = "# Report\n\n![Image](img_0)"
+        result = mg._replace_image_refs(md, images)
+
+        assert "imgs/img_0.png" in result
+        assert "](img_0)" not in result
+
+    def test_replace_image_ref_external_url(self):
+        """外部 URL 不应被替换"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        mg = MarkdownGenerator(output_dir=Path("/tmp"))
+        images = {}
+
+        md = "# Report\n\n![Image](https://example.com/img.png)"
+        result = mg._replace_image_refs(md, images)
+
+        assert "https://example.com/img.png" in result
+
+    def test_replace_image_ref_data_uri(self):
+        """data URI 不应被替换"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        mg = MarkdownGenerator(output_dir=Path("/tmp"))
+        images = {}
+
+        md = '# Report\n\n![Image](data:image/png;base64,iVBORw0KGgo)'
+        result = mg._replace_image_refs(md, images)
+
+        assert "data:image/png;base64,iVBORw0KGgo" in result
+
+    def test_replace_html_img_tag(self):
+        """替换 HTML img 标签中的路径"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        mg = MarkdownGenerator(output_dir=Path("/tmp"))
+        images = {"chart_0": "data:image/png;base64,chart"}
+
+        md = '<img src="chart_0" alt="Chart" />'
+        result = mg._replace_image_refs(md, images)
+
+        assert 'src="imgs/chart_0.png"' in result
+
+
+@pytest.mark.unit
+class TestSafeImageName:
+    """测试安全图片文件名生成"""
+
+    def test_safe_image_name_with_special_chars(self):
+        """包含特殊字符的图片名应被清理"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        result = MarkdownGenerator._safe_image_name("img<>&:*?.png")
+        assert "<" not in result
+        assert ">" not in result
+        assert ":" not in result
+        assert "*" not in result
+        assert "?" not in result
+        assert result.endswith(".png")
+
+    def test_safe_image_name_without_extension(self):
+        """无扩展名的图片名应添加 .png"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        result = MarkdownGenerator._safe_image_name("img_without_ext")
+        assert result.endswith(".png")
+
+    def test_safe_image_name_with_path_separator(self):
+        """路径分隔符应被替换"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        result = MarkdownGenerator._safe_image_name("imgs/subdir/image.jpg")
+        assert "/" not in result
+        assert "\\" not in result
+        assert result.endswith(".jpg")
+
+
+@pytest.mark.unit
+class TestEscapeMdTableCell:
+    """测试 _escape_md_table_cell XSS 防护与格式保护"""
+
+    @pytest.mark.parametrize("input_text,expected", [
+        # 管道符转义
+        ("a|b|c", "a\\|b\\|c"),
+        # 换行符替换为空格
+        ("line1\nline2", "line1 line2"),
+        # 反引号转义为 HTML 实体
+        ("code `rm -rf /` here", "code &#96;rm -rf /&#96; here"),
+    ])
+    def test_escapes_special_chars(self, input_text, expected):
+        """管道符、换行符、反引号应被正确转义"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+        result = MarkdownGenerator._escape_md_table_cell(input_text)
+        assert result == expected
+
+    @pytest.mark.parametrize("payload", [
+        "<script>alert(1)</script>",
+        '<img src=x onerror=alert(1)>',
+        '<img src=x onerror=alert(1)>|`code`',
+    ])
+    def test_escapes_html_tags(self, payload):
+        """尖括号应被 HTML 实体转义，防止注入 HTML 标签"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+        result = MarkdownGenerator._escape_md_table_cell(payload)
+        assert "<" not in result, f"未转义的 < 字符存在: {result}"
+        assert ">" not in result, f"未转义的 > 字符存在: {result}"
+        assert "&lt;" in result or "&gt;" in result
+
+    @pytest.mark.parametrize("input_value,expected", [
+        ("", ""),            # 空字符串返回空
+        (None, ""),          # None 返回空
+        (12345, "12345"),    # 非字符串先转字符串再转义
+    ])
+    def test_handles_empty_and_non_string(self, input_value, expected):
+        """空字符串、None、非字符串输入应正确处理"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+        result = MarkdownGenerator._escape_md_table_cell(input_value)
+        assert result == expected
+
+    @pytest.mark.parametrize("layout_items,assertion_func", [
+        # 恶意 type 字段转义
+        ([{"type": "<script>alert('xss')</script>", "content_preview": "normal text"}],
+         lambda result: ("<script>" not in result and "&lt;script&gt;" in result)),
+        # 恶意 preview 转义
+        ([{"type": "text", "content_preview": '<img src=x onerror=alert(1)>'}],
+         lambda result: ("<img src=x onerror" not in result and "&lt;img" in result)),
+        # 截断在转义前进行
+        ([{"type": "text", "content_preview": "A" * 95 + "<b>" + "B" * 50}],
+         lambda result: ("..." in result and "&lt" not in result.replace("&lt;", ""))),
+    ])
+    def test_build_report_escapes_malicious_layout(self, temp_dir, layout_items, assertion_func):
+        """build_report 应转义 layout_items 中的恶意内容"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+        mg = MarkdownGenerator(output_dir=temp_dir / "output")
+
+        result = mg.build_report(
+            original_filename="test.jpg",
+            markdown_text="# Report",
+            images={},
+            layout_items=layout_items,
+            processing_time=1.0,
+        )
+        assert assertion_func(result), f"断言失败，result 片段: {result[:200]}"
