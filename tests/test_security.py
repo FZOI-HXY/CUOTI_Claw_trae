@@ -134,159 +134,90 @@ class TestSecureFilename:
 # 2. history_id 格式验证（防枚举）
 # ──────────────────────────────────────────────────
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestHistoryIdFormat:
     """测试 history_id 使用足够长的随机 ID"""
 
-    def test_history_id_length(self, temp_dir):
+    def test_history_id_length(self, temp_dir, load_backend_app):
         """history_id 应为 16 字符 hex（64 位熵）"""
-        from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
+        backend = load_backend_app(temp_dir, "history_id_length")
 
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_hid",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-            from apps.web.api.services.task_service import task_service
-            task_service._task_store.clear()
-            task_service._history.clear()
+        with patch.object(backend.paddle_service, "submit_task", new_callable=AsyncMock) as ms, \
+             patch.object(backend.paddle_service, "poll_once", new_callable=AsyncMock) as mp, \
+             patch.object(backend.paddle_service, "extract_result") as me:
+            async def _s(*a, **k):
+                return {"success": True, "job_id": "mock_job_001"}
+            ms.side_effect = _s
+            mp.return_value = {"status": "done", "state": "done", "raw_result": {}}
+            me.return_value = {"markdown_text": "# T", "images": {}, "layout_image": None, "layout_items": []}
 
-            with patch.object(backend.paddle_service, "submit_task", new_callable=AsyncMock) as ms, \
-                 patch.object(backend.paddle_service, "poll_once", new_callable=AsyncMock) as mp, \
-                 patch.object(backend.paddle_service, "extract_result") as me:
-                async def _s(*a, **k):
-                    return {"success": True, "job_id": "mock_job_001"}
-                ms.side_effect = _s
-                mp.return_value = {"status": "done", "state": "done", "raw_result": {}}
-                me.return_value = {"markdown_text": "# T", "images": {}, "layout_image": None, "layout_items": []}
+            client = TestClient(backend.app)
+            # 上传并完成一个任务
+            from PIL import Image
+            img = Image.new("RGB", (50, 50))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG")
+            up = client.post("/api/upload", files={"file": ("t.jpg", io.BytesIO(buf.getvalue()), "image/jpeg")})
+            fid = up.json()["file_id"]
+            sub = client.post(f"/api/submit/{fid}")
+            tid = sub.json()["task_id"]
+            client.post(f"/api/poll/{tid}")
 
-                client = TestClient(backend.app)
-                # 上传并完成一个任务
-                from PIL import Image
+        # 检查 history_id
+        resp = client.get("/api/history")
+        items = resp.json()["items"]
+        assert len(items) >= 1
+        hid = items[0]["id"]
+        # history_id 应为 16 字符 hex
+        assert len(hid) == 16, f"history_id 长度应为 16，实际 {len(hid)}: {hid}"
+        assert re.match(r'^[0-9a-f]{16}$', hid), f"history_id 不是有效的 16 位 hex: {hid}"
+
+    def test_history_ids_are_unique(self, temp_dir, load_backend_app):
+        """多个 history_id 应互不相同"""
+        backend = load_backend_app(temp_dir, "history_id_unique")
+
+        with patch.object(backend.paddle_service, "submit_task", new_callable=AsyncMock) as ms, \
+             patch.object(backend.paddle_service, "poll_once", new_callable=AsyncMock) as mp, \
+             patch.object(backend.paddle_service, "extract_result") as me:
+            async def _s(*a, **k):
+                return {"success": True, "job_id": "mock_job_002"}
+            ms.side_effect = _s
+            mp.return_value = {"status": "done", "state": "done", "raw_result": {}}
+            me.return_value = {"markdown_text": "# T", "images": {}, "layout_image": None, "layout_items": []}
+
+            client = TestClient(backend.app)
+            from PIL import Image
+            ids = []
+            for i in range(5):
                 img = Image.new("RGB", (50, 50))
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG")
-                up = client.post("/api/upload", files={"file": ("t.jpg", io.BytesIO(buf.getvalue()), "image/jpeg")})
+                up = client.post("/api/upload", files={"file": (f"t{i}.jpg", io.BytesIO(buf.getvalue()), "image/jpeg")})
                 fid = up.json()["file_id"]
                 sub = client.post(f"/api/submit/{fid}")
                 tid = sub.json()["task_id"]
                 client.post(f"/api/poll/{tid}")
 
-            # 检查 history_id
             resp = client.get("/api/history")
-            items = resp.json()["items"]
-            assert len(items) >= 1
-            hid = items[0]["id"]
-            # history_id 应为 16 字符 hex
-            assert len(hid) == 16, f"history_id 长度应为 16，实际 {len(hid)}: {hid}"
-            assert re.match(r'^[0-9a-f]{16}$', hid), f"history_id 不是有效的 16 位 hex: {hid}"
-        finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
-
-    def test_history_ids_are_unique(self, temp_dir):
-        """多个 history_id 应互不相同"""
-        from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_hid2",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-            from apps.web.api.services.task_service import task_service
-            task_service._task_store.clear()
-            task_service._history.clear()
-
-            with patch.object(backend.paddle_service, "submit_task", new_callable=AsyncMock) as ms, \
-                 patch.object(backend.paddle_service, "poll_once", new_callable=AsyncMock) as mp, \
-                 patch.object(backend.paddle_service, "extract_result") as me:
-                async def _s(*a, **k):
-                    return {"success": True, "job_id": "mock_job_002"}
-                ms.side_effect = _s
-                mp.return_value = {"status": "done", "state": "done", "raw_result": {}}
-                me.return_value = {"markdown_text": "# T", "images": {}, "layout_image": None, "layout_items": []}
-
-                client = TestClient(backend.app)
-                from PIL import Image
-                ids = []
-                for i in range(5):
-                    img = Image.new("RGB", (50, 50))
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG")
-                    up = client.post("/api/upload", files={"file": (f"t{i}.jpg", io.BytesIO(buf.getvalue()), "image/jpeg")})
-                    fid = up.json()["file_id"]
-                    sub = client.post(f"/api/submit/{fid}")
-                    tid = sub.json()["task_id"]
-                    client.post(f"/api/poll/{tid}")
-
-                resp = client.get("/api/history")
-                ids = [item["id"] for item in resp.json()["items"]]
-                assert len(ids) == len(set(ids)), "history_id 存在重复"
-        finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
+            ids = [item["id"] for item in resp.json()["items"]]
+            assert len(ids) == len(set(ids)), "history_id 存在重复"
 
 
 # ──────────────────────────────────────────────────
 # 3. 错误消息环境区分（debug 模式）
 # ──────────────────────────────────────────────────
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestErrorMessagesEnv:
     """测试错误消息是否根据 debug 模式区分"""
 
-    def test_debug_false_hides_details(self, temp_dir):
+    def test_debug_false_hides_details(self, temp_dir, load_backend_app):
         """debug=False 时错误消息应隐藏详情"""
         from apps.web.api.config import settings
         original_debug = settings.debug
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
         settings.debug = False
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
         try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_debug",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-            from apps.web.api.services.task_service import task_service
-            task_service._task_store.clear()
-            task_service._history.clear()
+            backend = load_backend_app(temp_dir, "debug_false")
 
             # Mock submit 抛出异常
             with patch.object(backend.paddle_service, "submit_task", new_callable=AsyncMock) as ms:
@@ -310,36 +241,14 @@ class TestErrorMessagesEnv:
             assert "SECRET_INTERNAL_PATH_12345" not in detail, "生产模式下不应泄露内部错误详情"
         finally:
             settings.debug = original_debug
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
 
-    def test_debug_true_shows_details(self, temp_dir):
+    def test_debug_true_shows_details(self, temp_dir, load_backend_app):
         """debug=True 时错误消息可包含详情"""
         from apps.web.api.config import settings
         original_debug = settings.debug
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
         settings.debug = True
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
         try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_debug2",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-            from apps.web.api.services.task_service import task_service
-            task_service._task_store.clear()
-            task_service._history.clear()
+            backend = load_backend_app(temp_dir, "debug_true")
 
             with patch.object(backend.paddle_service, "submit_task", new_callable=AsyncMock) as ms:
                 async def _raise(*a, **k):
@@ -362,9 +271,6 @@ class TestErrorMessagesEnv:
             assert "SECRET_DEBUG_DETAIL_98765" in detail, "debug 模式下应包含错误详情"
         finally:
             settings.debug = original_debug
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
 
 
 # ──────────────────────────────────────────────────
@@ -425,40 +331,20 @@ class TestSQLiteWAL:
 # 5. 速率限制
 # ──────────────────────────────────────────────────
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestRateLimit:
     """测试 API 速率限制"""
 
-    def test_rate_limit_returns_429(self, temp_dir):
+    def test_rate_limit_returns_429(self, temp_dir, load_backend_app):
         """超过速率限制应返回 429"""
         from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
         original_requests = settings.rate_limit_requests
         original_window = settings.rate_limit_window
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
-        settings.paddleocr_api_key = "test_token"
         # 设置很低的速率限制便于测试
         settings.rate_limit_requests = 3
         settings.rate_limit_window = 60
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
         try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_rate",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-            from apps.web.api.services.task_service import task_service
-            task_service._task_store.clear()
-            task_service._history.clear()
-
+            backend = load_backend_app(temp_dir, "rate_limit_429")
             client = TestClient(backend.app)
 
             # 发送超过限制的请求（健康检查不限制，用 /api/config）
@@ -470,41 +356,18 @@ class TestRateLimit:
             # 应有 429 状态码
             assert 429 in statuses, f"超过速率限制应返回 429，实际状态码: {statuses}"
         finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
             settings.rate_limit_requests = original_requests
             settings.rate_limit_window = original_window
 
-    def test_health_check_exempt_from_rate_limit(self, temp_dir):
+    def test_health_check_exempt_from_rate_limit(self, temp_dir, load_backend_app):
         """健康检查应豁免速率限制"""
         from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
         original_requests = settings.rate_limit_requests
         original_window = settings.rate_limit_window
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
-        settings.paddleocr_api_key = "test_token"
         settings.rate_limit_requests = 2
         settings.rate_limit_window = 60
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
         try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_rate2",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-            from apps.web.api.services.task_service import task_service
-            task_service._task_store.clear()
-            task_service._history.clear()
-
+            backend = load_backend_app(temp_dir, "rate_limit_health")
             client = TestClient(backend.app)
 
             # 发送多个健康检查请求
@@ -516,9 +379,6 @@ class TestRateLimit:
             # 健康检查不应被限制
             assert all(s == 200 for s in statuses), f"健康检查应豁免速率限制，实际状态码: {statuses}"
         finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
             settings.rate_limit_requests = original_requests
             settings.rate_limit_window = original_window
 
@@ -575,70 +435,6 @@ class TestMarkdownHtmlEscape:
         html = render_markdown_html(md_content)
         for check in checks:
             assert check in html, f"期望包含 {check!r}，实际未包含"
-
-
-# ──────────────────────────────────────────────────
-# 7. 报告删除安全
-# ──────────────────────────────────────────────────
-
-@pytest.mark.unit
-class TestReportDeleteSecurity:
-    """测试报告删除的安全防护"""
-
-    def test_safe_report_dir_rejects_file(self):
-        """_safe_report_dir 应拒绝普通文件（仅允许目录）"""
-        from pathlib import Path
-        from fastapi import HTTPException
-        
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            output_dir = Path(tmp_dir) / "output"
-            output_dir.mkdir()
-            
-            test_file = output_dir / "test_file.txt"
-            test_file.write_text("test content")
-            
-            def _test_safe_report_dir(report_id: str) -> Path:
-                if not report_id:
-                    raise HTTPException(status_code=400, detail="无效的报告 ID")
-                report_dir = (output_dir / report_id).resolve()
-                try:
-                    report_dir.relative_to(output_dir)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
-                if report_dir.exists() and not report_dir.is_dir():
-                    raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
-                return report_dir
-            
-            with pytest.raises(HTTPException) as exc_info:
-                _test_safe_report_dir("test_file.txt")
-            assert exc_info.value.status_code == 400
-
-    def test_safe_report_dir_allows_directory(self):
-        """_safe_report_dir 应允许有效的报告目录"""
-        from pathlib import Path
-        from fastapi import HTTPException
-        
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            output_dir = Path(tmp_dir) / "output"
-            output_dir.mkdir()
-            
-            test_dir = output_dir / "valid_report_dir"
-            test_dir.mkdir()
-            
-            def _test_safe_report_dir(report_id: str) -> Path:
-                if not report_id:
-                    raise HTTPException(status_code=400, detail="无效的报告 ID")
-                report_dir = (output_dir / report_id).resolve()
-                try:
-                    report_dir.relative_to(output_dir)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
-                if report_dir.exists() and not report_dir.is_dir():
-                    raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
-                return report_dir
-            
-            result = _test_safe_report_dir("valid_report_dir")
-            assert result == test_dir.resolve()
 
 
 # ──────────────────────────────────────────────────
@@ -950,37 +746,17 @@ class TestIsValidReportIdFormat:
 # 10. 认证中间件测试
 # ──────────────────────────────────────────────────
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestAuthMiddleware:
     """测试认证中间件的安全防护"""
 
-    def test_auth_middleware_rejects_invalid_token(self, temp_dir):
+    def test_auth_middleware_rejects_invalid_token(self, temp_dir, load_backend_app):
         """无效 token 应被拒绝（401 Unauthorized）"""
         from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
         original_token = settings.claw_auth_token
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
         settings.claw_auth_token = "valid_test_token_123"
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
         try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_auth",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-            from apps.web.api.services.task_service import task_service
-            task_service._task_store.clear()
-            task_service._history.clear()
-
+            backend = load_backend_app(temp_dir, "auth_reject")
             client = TestClient(backend.app)
 
             # POST 请求需要认证
@@ -992,38 +768,15 @@ class TestAuthMiddleware:
             resp = client.post("/api/config", json={"log_level": "DEBUG"}, headers={"X-Claw-Token": "wrong_token"})
             assert resp.status_code == 401
         finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
             settings.claw_auth_token = original_token
 
-    def test_auth_middleware_accepts_valid_token(self, temp_dir):
+    def test_auth_middleware_accepts_valid_token(self, temp_dir, load_backend_app):
         """有效 token 应被接受"""
         from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
         original_token = settings.claw_auth_token
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
         settings.claw_auth_token = "valid_test_token_456"
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
         try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_auth2",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-            from apps.web.api.services.task_service import task_service
-            task_service._task_store.clear()
-            task_service._history.clear()
-
+            backend = load_backend_app(temp_dir, "auth_accept")
             client = TestClient(backend.app)
 
             # 正确的 token
@@ -1034,35 +787,15 @@ class TestAuthMiddleware:
             )
             assert resp.status_code == 200, "有效 token 应被接受"
         finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
             settings.claw_auth_token = original_token
 
-    def test_auth_middleware_exempt_for_get_requests(self, temp_dir):
+    def test_auth_middleware_exempt_for_get_requests(self, temp_dir, load_backend_app):
         """GET 请求不需要认证"""
         from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
         original_token = settings.claw_auth_token
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
         settings.claw_auth_token = "test_token_for_auth"
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
         try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_auth3",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-
+            backend = load_backend_app(temp_dir, "auth_get_exempt")
             client = TestClient(backend.app)
 
             # GET 请求不需要 token
@@ -1072,44 +805,21 @@ class TestAuthMiddleware:
             resp = client.get("/api/history")
             assert resp.status_code == 200
         finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
             settings.claw_auth_token = original_token
 
-    def test_auth_middleware_exempt_for_health_check(self, temp_dir):
+    def test_auth_middleware_exempt_for_health_check(self, temp_dir, load_backend_app):
         """健康检查端点不需要认证"""
         from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
         original_token = settings.claw_auth_token
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
         settings.claw_auth_token = "test_token_health"
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
         try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_health_auth",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
-
+            backend = load_backend_app(temp_dir, "auth_health_exempt")
             client = TestClient(backend.app)
 
             # 健康检查不需要认证（POST 请求）
             resp = client.get("/api/health")
             assert resp.status_code == 200
         finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
             settings.claw_auth_token = original_token
 
 
@@ -1117,85 +827,44 @@ class TestAuthMiddleware:
 # 11. 安全响应头中间件测试
 # ──────────────────────────────────────────────────
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestSecurityHeadersMiddleware:
     """测试安全响应头中间件"""
 
-    def test_security_headers_present(self, temp_dir):
+    def test_security_headers_present(self, temp_dir, load_backend_app):
         """所有响应应包含安全响应头"""
-        from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
+        backend = load_backend_app(temp_dir, "sec_headers")
+        client = TestClient(backend.app)
 
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_sec_headers",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
 
-            client = TestClient(backend.app)
+        # 检查安全响应头
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+        assert resp.headers.get("X-XSS-Protection") == "1; mode=block"
+        assert resp.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+        assert "Content-Security-Policy" in resp.headers
 
-            resp = client.get("/api/health")
-            assert resp.status_code == 200
-
-            # 检查安全响应头
-            assert resp.headers.get("X-Content-Type-Options") == "nosniff"
-            assert resp.headers.get("X-Frame-Options") == "DENY"
-            assert resp.headers.get("X-XSS-Protection") == "1; mode=block"
-            assert resp.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
-            assert "Content-Security-Policy" in resp.headers
-
-        finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
-
-    def test_csp_header_restricts_script_sources(self, temp_dir):
+    def test_csp_header_restricts_script_sources(self, temp_dir, load_backend_app):
         """CSP 头应限制脚本来源"""
-        from apps.web.api.config import settings
-        original_upload = settings.upload_dir
-        original_output = settings.output_dir
-        original_log = settings.log_dir
-        settings.upload_dir = str(temp_dir / "uploads")
-        settings.output_dir = str(temp_dir / "output")
-        settings.log_dir = str(temp_dir / "logs")
-        settings.paddleocr_api_key = "test_token"
-        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
-            Path(d).mkdir(parents=True, exist_ok=True)
+        backend = load_backend_app(temp_dir, "csp")
+        client = TestClient(backend.app)
 
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "backend_main_csp",
-                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
-            )
-            backend = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(backend)
+        resp = client.get("/api/health")
+        csp = resp.headers.get("Content-Security-Policy", "")
 
-            client = TestClient(backend.app)
-
-            resp = client.get("/api/health")
-            csp = resp.headers.get("Content-Security-Policy", "")
-
-            # CSP 应限制 script-src
-            assert "script-src" in csp
-            # 不应允许任意外部脚本
-            assert "https://" not in csp.split("script-src")[1].split(";")[0] if "script-src" in csp else True
-
-        finally:
-            settings.upload_dir = original_upload
-            settings.output_dir = original_output
-            settings.log_dir = original_log
+        # CSP 应限制 script-src
+        assert "script-src" in csp
+        # 验证 script-src 指令不含外域 URL（保留原覆盖点，仅放宽字符串切片脆性）
+        # 用 directive 迭代替代 split("script-src")[1].split(";")[0]，避免 CSP 格式变化时切片越界
+        script_src_part = ""
+        for directive in csp.split(";"):
+            if "script-src" in directive:
+                script_src_part = directive
+                break
+        assert "https://" not in script_src_part
+        assert "http://" not in script_src_part
 
 
 # ──────────────────────────────────────────────────
