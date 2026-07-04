@@ -12,6 +12,7 @@ import json
 import uuid
 import shutil
 import tempfile
+import importlib.util
 from pathlib import Path
 from datetime import datetime
 from io import BytesIO
@@ -66,19 +67,23 @@ def create_test_image() -> bytes:
     return buf.getvalue()
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def sample_image_bytes():
-    """生成测试图片字节数据"""
+    """生成测试图片字节数据（纯内存，session 级共享）"""
     return create_test_image()
 
 
-@pytest.fixture(scope="function")
-def sample_image_file(temp_dir):
-    """生成测试图片文件并返回路径"""
-    data = create_test_image()
-    filepath = temp_dir / "test_sample.jpg"
-    filepath.write_bytes(data)
-    return filepath
+@pytest.fixture(scope="session")
+def sample_image_file(sample_image_bytes):
+    """生成测试图片文件并返回路径（session 级，独立于 temp_dir）
+
+    在系统 temp 目录创建独立文件，避免依赖 function-scope 的 temp_dir，
+    从而可以安全地改为 session scope。文件名包含 pid 防止并行进程冲突。
+    """
+    file_path = Path(tempfile.gettempdir()) / f"claw_sample_{os.getpid()}.jpg"
+    file_path.write_bytes(sample_image_bytes)
+    yield file_path
+    file_path.unlink(missing_ok=True)
 
 
 # ──────────────────────────────────────────────────
@@ -187,6 +192,75 @@ def mock_httpx_client():
     mock_client.get.return_value = mock_get_response
 
     return mock_client
+
+
+# ──────────────────────────────────────────────────
+# FastAPI 后端 App 加载 Fixture（T3 抽取）
+# ──────────────────────────────────────────────────
+
+@pytest.fixture
+def load_backend_app():
+    """工厂 fixture：返回 `_load(temp_dir, name_suffix="") -> backend_main_module`。
+
+    用途：在测试方法签名中加 `load_backend_app` 参数获取工厂，再调用
+        `backend_main = load_backend_app(temp_dir, "auth")`
+    即可获得 apps/web/api/main.py 模块，避免每个测试文件重复实现
+    `importlib.util.spec_from_file_location` 的样板代码。
+
+    工厂内部完成：
+      1. 设置 settings.upload_dir/output_dir/log_dir 为 temp_dir 子目录
+      2. 设置 settings.paddleocr_api_key 为 mock token
+      3. 创建上述目录
+      4. 用 importlib.util 加载 main.py（module name 含 id(temp_dir) 保证唯一）
+      5. 注册到 sys.modules 并 exec_module
+      6. 清空 task_service._task_store 和 _history
+      7. 关闭旧 task_service._db 连接（设为 None）
+
+    注意：调用方负责恢复 settings 原值（如必要）以及对 paddle_service 的 Mock。
+    """
+
+    def _load(temp_dir, name_suffix=""):
+        from apps.web.api.config import settings
+        from apps.web.api.services.task_service import task_service
+
+        # 1. 设置上传/输出/日志目录为临时目录下子目录
+        settings.upload_dir = str(temp_dir / "uploads")
+        settings.output_dir = str(temp_dir / "output")
+        settings.log_dir = str(temp_dir / "logs")
+        # 2. 配置 mock API key（避免提交时报错）
+        settings.paddleocr_api_key = "test_token_for_mock"
+
+        # 3. 创建目录
+        Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+        Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
+        Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
+
+        # 4. 用 importlib.util 加载 main.py（module name 含 id(temp_dir) 保证唯一）
+        backend_main_path = PROJECT_ROOT / "apps" / "web" / "api" / "main.py"
+        module_name = f"backend_main_{name_suffix}_{id(temp_dir)}"
+        spec = importlib.util.spec_from_file_location(module_name, backend_main_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"无法加载后端模块: {backend_main_path}")
+        backend_main = importlib.util.module_from_spec(spec)
+        # 5. 注册到 sys.modules 并 exec_module
+        sys.modules[module_name] = backend_main
+        spec.loader.exec_module(backend_main)
+
+        # 6. 清空任务存储和历史（重置测试状态）
+        task_service._task_store.clear()
+        task_service._history.clear()
+        # 7. 重置 DB 连接：settings.output_dir 已改为 temp_dir，
+        # 关闭旧连接使其在 temp_dir 下重新初始化，避免查询到旧 DB 残留记录
+        if task_service._db is not None:
+            try:
+                task_service._db.close()
+            except Exception:
+                pass
+            task_service._db = None
+
+        return backend_main
+
+    return _load
 
 
 # ──────────────────────────────────────────────────
