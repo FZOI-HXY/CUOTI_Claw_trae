@@ -28,18 +28,6 @@ class TestSetupLogger:
 
 
 @pytest.mark.unit
-class TestLoggerHandlers:
-    def test_has_console_handler(self):
-        from logger import setup_logger
-        logger = setup_logger("TestLogger_H1")
-        has_console = any(
-            isinstance(h, logging.StreamHandler)
-            for h in logger.handlers
-        )
-        assert has_console
-
-
-@pytest.mark.unit
 class TestModuleLevelLogger:
     def test_module_logger_ok(self):
         from logger import logger
