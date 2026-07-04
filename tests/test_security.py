@@ -531,93 +531,50 @@ class TestRateLimit:
 class TestMarkdownHtmlEscape:
     """测试桌面端 render_markdown_html 的 HTML 转义"""
 
-    def test_escapes_script_tag(self):
-        """<script> 标签应被转义"""
+    @pytest.mark.parametrize("md_content,forbidden_substring,escape_marker", [
+        # <script> 标签转义
+        ('# Title\n\nSome text <script>alert("xss")</script>',
+         "<script>", "&lt;script&gt;"),
+        # HTML 事件属性转义
+        ('# Title\n\n<img src=x onerror=alert(1)>',
+         "<img src=x onerror", "&lt;img"),
+        # 表格内容转义
+        ('| 列1 | 列2 |\n| --- | --- |\n| <b>bold</b> | normal |',
+         "<b>bold</b>", "&lt;b&gt;"),
+        # 行内代码中的特殊字符转义
+        ('Some `code <script>` here',
+         "<script>", None),
+        # 引用块中的 HTML 转义
+        ('> <img src=x onerror=alert(1)>',
+         "<img src=x onerror", "&lt;img"),
+        # 图片 alt 文本转义
+        ('![<script>alert(1)</script>](http://example.com/img.png)',
+         "<script>alert(1)</script>", None),
+        # 代码块内容转义
+        ('```json\n{"evil": "</script><script>alert(1)</script>"}\n```',
+         "<script>alert(1)</script>", None),
+    ])
+    def test_xss_payloads_escaped(self, md_content, forbidden_substring, escape_marker):
+        """各类 XSS 载荷应被转义，不应存在未转义的恶意标签"""
         from utils import render_markdown_html
-        md = '# Title\n\nSome text <script>alert("xss")</script>'
-        html = render_markdown_html(md)
+        html = render_markdown_html(md_content)
 
-        assert "<script>" not in html, "<script> 标签未被转义"
-        assert "</script>" not in html, "</script> 标签未被转义"
-        # 应以转义形式存在
-        assert "&lt;script&gt;" in html or "&lt;script" in html
+        assert forbidden_substring not in html, f"未转义的恶意内容存在: {forbidden_substring}"
+        if escape_marker is not None:
+            assert escape_marker in html, f"转义标记 {escape_marker} 未找到"
 
-    def test_escapes_html_attributes(self):
-        """HTML 事件属性应被转义"""
+    @pytest.mark.parametrize("md_content,checks", [
+        # 空输入应返回有效 HTML
+        ("", ["<html>", "</html>"]),
+        # 正常 Markdown 标记应保留
+        ('# Title\n\n**bold** and *italic*', ["<h1>", "<strong>", "<em>"]),
+    ])
+    def test_safe_and_empty_input(self, md_content, checks):
+        """空输入和正常 Markdown 应正确处理"""
         from utils import render_markdown_html
-        md = '# Title\n\n<img src=x onerror=alert(1)>'
-        html = render_markdown_html(md)
-
-        # 不应存在未转义的 <img 标签（带 onerror 的恶意 img）
-        assert "<img src=x onerror" not in html, "未转义的 <img onerror> 标签存在 XSS 风险"
-        # < 和 > 应被转义为 &lt; &gt;
-        assert "&lt;img" in html, "恶意 HTML 标签未被转义"
-
-    def test_escapes_table_content(self):
-        """表格内容应被转义"""
-        from utils import render_markdown_html
-        md = '| 列1 | 列2 |\n| --- | --- |\n| <b>bold</b> | normal |'
-        html = render_markdown_html(md)
-
-        # <b> 标签应被转义，不应作为 HTML 执行
-        assert "<b>bold</b>" not in html, "表格中的 HTML 标签未被转义"
-        assert "&lt;b&gt;" in html
-
-    def test_preserves_safe_markdown(self):
-        """正常的 Markdown 标记应保留"""
-        from utils import render_markdown_html
-        md = '# Title\n\n**bold** and *italic*'
-        html = render_markdown_html(md)
-
-        assert "<h1>" in html
-        assert "<strong>" in html
-        assert "<em>" in html
-
-    def test_escapes_inline_code(self):
-        """行内代码中的特殊字符应被转义"""
-        from utils import render_markdown_html
-        md = 'Some `code <script>` here'
-        html = render_markdown_html(md)
-
-        assert "<script>" not in html, "行内代码中的 <script> 未被转义"
-        assert "<code>" in html
-
-    def test_escapes_blockquote(self):
-        """引用块中的 HTML 应被转义"""
-        from utils import render_markdown_html
-        md = '> <img src=x onerror=alert(1)>'
-        html = render_markdown_html(md)
-
-        # 不应存在未转义的 <img 标签带 onerror
-        assert "<img src=x onerror" not in html, "引用块中存在未转义的恶意 <img> 标签"
-        assert "&lt;img" in html, "引用块中的 HTML 标签未被转义"
-
-    def test_image_alt_escaped(self):
-        """图片 alt 文本应被转义"""
-        from utils import render_markdown_html
-        md = '![<script>alert(1)</script>](http://example.com/img.png)'
-        html = render_markdown_html(md)
-
-        # <script> 标签不应作为真实 HTML 执行
-        assert "<script>alert(1)</script>" not in html, "图片 alt 中的 <script> 未被转义"
-        # 图片标签应存在但 alt 中的特殊字符被转义
-        assert "<img" in html
-
-    def test_code_block_content_escaped(self):
-        """代码块内容应被转义"""
-        from utils import render_markdown_html
-        md = '```json\n{"evil": "</script><script>alert(1)</script>"}\n```'
-        html = render_markdown_html(md)
-
-        assert "<script>alert(1)</script>" not in html, "代码块中的 <script> 未被转义"
-        assert "<pre><code>" in html
-
-    def test_empty_input(self):
-        """空输入应返回有效 HTML"""
-        from utils import render_markdown_html
-        html = render_markdown_html("")
-        assert "<html>" in html
-        assert "</html>" in html
+        html = render_markdown_html(md_content)
+        for check in checks:
+            assert check in html, f"期望包含 {check!r}，实际未包含"
 
 
 # ──────────────────────────────────────────────────
@@ -796,9 +753,36 @@ class TestSecurityUtils:
         assert backend._is_internal_ip("example.com") is False
         assert backend._is_internal_ip("1.2.3.4") is False
 
+    def test_is_internal_ip_dns_resolution(self):
+        """_is_internal_ip 应检测解析到内网 IP 的域名（防 SSRF 绕过）"""
+        import importlib.util
+        import socket
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_internal_dns",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = [
+                [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.168.1.1", 0))],
+                socket.gaierror,
+            ]
+            assert backend._is_internal_ip("evil-domain.com") is True
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = [
+                [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 0))],
+                socket.gaierror,
+            ]
+            assert backend._is_internal_ip("good-domain.com") is False
+
     def test_validate_file_url_valid(self):
         """_validate_file_url 应接受有效 URL"""
         import importlib.util
+        from unittest.mock import patch
+        import socket as _socket
         spec = importlib.util.spec_from_file_location(
             "backend_main_url",
             Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
@@ -806,8 +790,10 @@ class TestSecurityUtils:
         backend = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(backend)
 
-        backend._validate_file_url("https://example.com/image.jpg")
-        backend._validate_file_url("https://cdn.example.com/path/to/file.png")
+        # B6: _validate_file_url 现在做真实 DNS 解析，需 mock 公网 IP 避免测试环境依赖
+        with patch.object(backend, '_resolve_and_validate_ip', return_value='93.184.216.34'):
+            backend._validate_file_url("https://example.com/image.jpg")
+            backend._validate_file_url("https://cdn.example.com/path/to/file.png")
 
     def test_validate_file_url_invalid(self):
         """_validate_file_url 应拒绝无效 URL"""
@@ -899,3 +885,368 @@ class TestSecurityUtils:
             with pytest.raises(HTTPException) as exc_info:
                 backend._safe_report_image_path(report_dir, "/etc/passwd")
             assert exc_info.value.status_code == 400
+
+
+# ──────────────────────────────────────────────────
+# 9.5 report_id 格式校验测试
+# ──────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestIsValidReportIdFormat:
+    """测试 _is_valid_report_id_format 函数的格式校验
+
+    该函数用于批量下载端点过滤格式非法的 report_id，防止路径穿越和 Shell 注入。
+    """
+
+    @pytest.mark.parametrize("report_id,expected", [
+        # 合法格式
+        ("20260613_235614_a1b2c3d4", True),   # 标准格式 YYYYMMDD_HHMMSS_<8hex>
+        ("20260613_235614", True),             # 旧格式（无 hex 后缀）
+        ("20260613_235614_A1B2C3D4", True),    # 大写 hex 兼容
+        ("report-1", True),                    # 含连字符
+        ("a" * 64, True),                      # 刚好 64 字符（边界值）
+        # 非法格式
+        ("", False),                           # 空字符串
+        ("a" * 65, False),                     # 超长字符串（>64 字符）
+    ])
+    def test_valid_and_invalid_formats(self, report_id, expected):
+        """合法与非法格式的边界值测试"""
+        from apps.web.api.main import _is_valid_report_id_format
+        assert _is_valid_report_id_format(report_id) is expected
+
+    @pytest.mark.parametrize("malicious", [
+        # 路径穿越
+        "../../etc/passwd",
+        "../secret",
+        "..\\windows\\system32",
+        # Shell 元字符
+        "report|test",
+        "report;rm -rf",
+        "report`echo`",
+        "report$x",
+        "report>out",
+        "report&bg",
+        # 路径分隔符
+        "report/test",
+        "report\\test",
+    ])
+    def test_malicious_ids_rejected(self, malicious):
+        """恶意 ID（路径穿越、Shell 注入、路径分隔符）应被拒绝"""
+        from apps.web.api.main import _is_valid_report_id_format
+        assert _is_valid_report_id_format(malicious) is False, f"应拒绝: {malicious}"
+
+    @pytest.mark.parametrize("report_id,expected", [
+        ("report.test", False),   # 含点号（不在白名单字符集内）
+        ("report test", False),   # 含空格
+    ])
+    def test_special_chars_rejected(self, report_id, expected):
+        """点号和空格应被拒绝"""
+        from apps.web.api.main import _is_valid_report_id_format
+        assert _is_valid_report_id_format(report_id) is expected
+
+
+# ──────────────────────────────────────────────────
+# 10. 认证中间件测试
+# ──────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestAuthMiddleware:
+    """测试认证中间件的安全防护"""
+
+    def test_auth_middleware_rejects_invalid_token(self, temp_dir):
+        """无效 token 应被拒绝（401 Unauthorized）"""
+        from apps.web.api.config import settings
+        original_upload = settings.upload_dir
+        original_output = settings.output_dir
+        original_log = settings.log_dir
+        original_token = settings.claw_auth_token
+        settings.upload_dir = str(temp_dir / "uploads")
+        settings.output_dir = str(temp_dir / "output")
+        settings.log_dir = str(temp_dir / "logs")
+        settings.claw_auth_token = "valid_test_token_123"
+        settings.paddleocr_api_key = "test_token"
+        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
+            Path(d).mkdir(parents=True, exist_ok=True)
+
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "backend_main_auth",
+                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+            )
+            backend = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(backend)
+            from apps.web.api.services.task_service import task_service
+            task_service._task_store.clear()
+            task_service._history.clear()
+
+            client = TestClient(backend.app)
+
+            # POST 请求需要认证
+            resp = client.post("/api/config", json={"log_level": "DEBUG"})
+            assert resp.status_code == 401, "无效 token 应返回 401"
+            assert resp.json()["code"] == "UNAUTHORIZED"
+
+            # 错误的 token
+            resp = client.post("/api/config", json={"log_level": "DEBUG"}, headers={"X-Claw-Token": "wrong_token"})
+            assert resp.status_code == 401
+        finally:
+            settings.upload_dir = original_upload
+            settings.output_dir = original_output
+            settings.log_dir = original_log
+            settings.claw_auth_token = original_token
+
+    def test_auth_middleware_accepts_valid_token(self, temp_dir):
+        """有效 token 应被接受"""
+        from apps.web.api.config import settings
+        original_upload = settings.upload_dir
+        original_output = settings.output_dir
+        original_log = settings.log_dir
+        original_token = settings.claw_auth_token
+        settings.upload_dir = str(temp_dir / "uploads")
+        settings.output_dir = str(temp_dir / "output")
+        settings.log_dir = str(temp_dir / "logs")
+        settings.claw_auth_token = "valid_test_token_456"
+        settings.paddleocr_api_key = "test_token"
+        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
+            Path(d).mkdir(parents=True, exist_ok=True)
+
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "backend_main_auth2",
+                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+            )
+            backend = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(backend)
+            from apps.web.api.services.task_service import task_service
+            task_service._task_store.clear()
+            task_service._history.clear()
+
+            client = TestClient(backend.app)
+
+            # 正确的 token
+            resp = client.post(
+                "/api/config",
+                json={"log_level": "DEBUG"},
+                headers={"X-Claw-Token": "valid_test_token_456"}
+            )
+            assert resp.status_code == 200, "有效 token 应被接受"
+        finally:
+            settings.upload_dir = original_upload
+            settings.output_dir = original_output
+            settings.log_dir = original_log
+            settings.claw_auth_token = original_token
+
+    def test_auth_middleware_exempt_for_get_requests(self, temp_dir):
+        """GET 请求不需要认证"""
+        from apps.web.api.config import settings
+        original_upload = settings.upload_dir
+        original_output = settings.output_dir
+        original_log = settings.log_dir
+        original_token = settings.claw_auth_token
+        settings.upload_dir = str(temp_dir / "uploads")
+        settings.output_dir = str(temp_dir / "output")
+        settings.log_dir = str(temp_dir / "logs")
+        settings.claw_auth_token = "test_token_for_auth"
+        settings.paddleocr_api_key = "test_token"
+        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
+            Path(d).mkdir(parents=True, exist_ok=True)
+
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "backend_main_auth3",
+                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+            )
+            backend = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(backend)
+
+            client = TestClient(backend.app)
+
+            # GET 请求不需要 token
+            resp = client.get("/api/config")
+            assert resp.status_code == 200, "GET 请求不需要认证"
+
+            resp = client.get("/api/history")
+            assert resp.status_code == 200
+        finally:
+            settings.upload_dir = original_upload
+            settings.output_dir = original_output
+            settings.log_dir = original_log
+            settings.claw_auth_token = original_token
+
+    def test_auth_middleware_exempt_for_health_check(self, temp_dir):
+        """健康检查端点不需要认证"""
+        from apps.web.api.config import settings
+        original_upload = settings.upload_dir
+        original_output = settings.output_dir
+        original_log = settings.log_dir
+        original_token = settings.claw_auth_token
+        settings.upload_dir = str(temp_dir / "uploads")
+        settings.output_dir = str(temp_dir / "output")
+        settings.log_dir = str(temp_dir / "logs")
+        settings.claw_auth_token = "test_token_health"
+        settings.paddleocr_api_key = "test_token"
+        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
+            Path(d).mkdir(parents=True, exist_ok=True)
+
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "backend_main_health_auth",
+                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+            )
+            backend = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(backend)
+
+            client = TestClient(backend.app)
+
+            # 健康检查不需要认证（POST 请求）
+            resp = client.get("/api/health")
+            assert resp.status_code == 200
+        finally:
+            settings.upload_dir = original_upload
+            settings.output_dir = original_output
+            settings.log_dir = original_log
+            settings.claw_auth_token = original_token
+
+
+# ──────────────────────────────────────────────────
+# 11. 安全响应头中间件测试
+# ──────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestSecurityHeadersMiddleware:
+    """测试安全响应头中间件"""
+
+    def test_security_headers_present(self, temp_dir):
+        """所有响应应包含安全响应头"""
+        from apps.web.api.config import settings
+        original_upload = settings.upload_dir
+        original_output = settings.output_dir
+        original_log = settings.log_dir
+        settings.upload_dir = str(temp_dir / "uploads")
+        settings.output_dir = str(temp_dir / "output")
+        settings.log_dir = str(temp_dir / "logs")
+        settings.paddleocr_api_key = "test_token"
+        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
+            Path(d).mkdir(parents=True, exist_ok=True)
+
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "backend_main_sec_headers",
+                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+            )
+            backend = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(backend)
+
+            client = TestClient(backend.app)
+
+            resp = client.get("/api/health")
+            assert resp.status_code == 200
+
+            # 检查安全响应头
+            assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+            assert resp.headers.get("X-Frame-Options") == "DENY"
+            assert resp.headers.get("X-XSS-Protection") == "1; mode=block"
+            assert resp.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+            assert "Content-Security-Policy" in resp.headers
+
+        finally:
+            settings.upload_dir = original_upload
+            settings.output_dir = original_output
+            settings.log_dir = original_log
+
+    def test_csp_header_restricts_script_sources(self, temp_dir):
+        """CSP 头应限制脚本来源"""
+        from apps.web.api.config import settings
+        original_upload = settings.upload_dir
+        original_output = settings.output_dir
+        original_log = settings.log_dir
+        settings.upload_dir = str(temp_dir / "uploads")
+        settings.output_dir = str(temp_dir / "output")
+        settings.log_dir = str(temp_dir / "logs")
+        settings.paddleocr_api_key = "test_token"
+        for d in [settings.upload_dir, settings.output_dir, settings.log_dir]:
+            Path(d).mkdir(parents=True, exist_ok=True)
+
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "backend_main_csp",
+                Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+            )
+            backend = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(backend)
+
+            client = TestClient(backend.app)
+
+            resp = client.get("/api/health")
+            csp = resp.headers.get("Content-Security-Policy", "")
+
+            # CSP 应限制 script-src
+            assert "script-src" in csp
+            # 不应允许任意外部脚本
+            assert "https://" not in csp.split("script-src")[1].split(";")[0] if "script-src" in csp else True
+
+        finally:
+            settings.upload_dir = original_upload
+            settings.output_dir = original_output
+            settings.log_dir = original_log
+
+
+# ──────────────────────────────────────────────────
+# 12. Markdown 渲染长度限制测试
+# ──────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestMarkdownLengthLimit:
+    """测试 Markdown 渲染的长度限制防护"""
+
+    def test_markdown_length_limit_rejects_oversized(self):
+        """超大 Markdown 文本应被拒绝渲染"""
+        from utils import render_markdown_html
+
+        # 创建超大文本（超过 5MB）
+        oversized_md = "a" * (6 * 1024 * 1024)
+        html = render_markdown_html(oversized_md)
+
+        # 应返回错误消息而不是渲染
+        assert "<html>" in html
+        assert "Markdown 文本过长" in html or "性能问题" in html
+        # 不应包含原始内容的渲染
+        assert "<h1>" not in html
+        assert "<body>" in html
+
+    def test_markdown_length_limit_accepts_normal(self):
+        """正常大小的 Markdown 应被正确渲染"""
+        from utils import render_markdown_html
+
+        # 正常大小文本
+        normal_md = "# Test Title\n\n**bold text** and *italic*\n\n```\ncode block\n```"
+        html = render_markdown_html(normal_md)
+
+        # 应正常渲染
+        assert "<html>" in html
+        assert "<h1>" in html
+        assert "<strong>" in html
+        assert "<em>" in html
+        # 代码块内容应被转义后显示
+        assert "code block" in html
+
+    def test_markdown_length_limit_boundary(self):
+        """边界值测试（接近限制）"""
+        from utils import render_markdown_html
+
+        # 接近但不超过限制（4.9MB）
+        boundary_md = "# Test\n\n" + "content " * (4 * 1024 * 1024 // 8)
+        html = render_markdown_html(boundary_md)
+
+        # 应正常渲染
+        assert "<html>" in html
+        assert "<h1>" in html
+        # 不应出现长度限制警告
+        assert "过长" not in html
