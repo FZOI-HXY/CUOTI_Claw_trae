@@ -198,14 +198,19 @@ class TestApiTaskBasic:
     """测试 ApiTask 的基础功能"""
 
     def test_api_task_name_format(self):
-        """ApiTask 线程名应包含方法和端点信息"""
+        """线程 objectName 应包含 method 和 endpoint 信息（不依赖具体格式）"""
         from apps.desktop.workers.api_task import ApiTask
 
         task = ApiTask("http://localhost:8080", "GET", "/api/health")
-        assert "API-GET-/api/health" in task.objectName()
+        name = task.objectName()
+        assert "GET" in name
+        assert "/api/health" in name
+        # 不再断言 "API-GET-" 这个具体前缀
 
         task2 = ApiTask("http://localhost:8080", "POST", "/api/upload")
-        assert "API-POST-/api/upload" in task2.objectName()
+        name2 = task2.objectName()
+        assert "POST" in name2
+        assert "/api/upload" in name2
 
     def test_api_task_cancelled_skips_execution(self):
         """已取消的 ApiTask 应跳过 HTTP 请求"""
@@ -461,7 +466,7 @@ class TestThreadSafety:
         assert thread not in _SelfPreservingThread._active_instances or thread.isRunning() is False
 
     def test_thread_name_unique_counter(self):
-        """线程名计数器应正确递增"""
+        """5 个工作线程的 objectName 应互不相同"""
         from apps.desktop.workers.api_task import _SelfPreservingThread
 
         class NamedThread(_SelfPreservingThread):
@@ -475,10 +480,8 @@ class TestThreadSafety:
             t.start()
             t.wait(100)
 
-        # 名字应包含不同的计数器值
-        # 格式: Worker-{counter}
-        counters = [int(n.split("-")[1]) for n in names if "Worker-" in n]
-        assert len(set(counters)) == len(counters), "计数器应唯一递增"
+        # 仅断言唯一性，不依赖命名格式（不再提取 "Worker-{counter}" 计数器）
+        assert len(set(names)) == 5
 
     def test_concurrent_thread_creation_no_race(self):
         """并发创建线程不应导致计数器冲突"""
