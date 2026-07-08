@@ -13,6 +13,8 @@
 import io
 import re
 import uuid
+import hmac
+import socket
 import shutil
 import zipfile
 import asyncio
@@ -31,6 +33,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+import httpx
 
 from apps.web.api.config import settings, ENV_FILE_PATH, validate_api_token
 from apps.web.api.logger import setup_logger, update_log_level
@@ -128,17 +131,19 @@ async def security_headers_middleware(request: Request, call_next):
 
 
 # S06: 本地认证中间件
-# 仅对 POST/DELETE/PUT 请求校验 X-Claw-Token 头；GET 请求和健康检查不需要认证。
+# 对所有请求校验 X-Claw-Token 头，仅显式白名单端点免认证。
 # 当 settings.claw_auth_token 为空时（开发/测试模式），不启用认证。
+# 安全说明（F-001 修复）：GET 请求不再全局豁免——公网部署下 GET 端点
+# （/api/reports、/api/history 等）返回敏感业务数据，必须校验 token 防止未授权读取。
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """本地认证中间件：保护状态变更操作"""
-    # 健康检查和初始化端点不需要认证
-    if request.url.path in ("/api/health", "/api/init"):
-        return await call_next(request)
+    """本地认证中间件：保护所有业务端点
 
-    # GET 请求不需要认证
-    if request.method == "GET":
+    公开端点（免认证）：/、/api/health、/api/init、/api/info、/api/status、/app/*
+    业务端点（需认证）：/api/reports、/api/report/*、/api/history、/api/batch/*、/api/config 等
+    """
+    # 显式白名单：公开端点不需要认证
+    if request.url.path in ("/", "/api/health", "/api/init", "/api/info", "/api/status"):
         return await call_next(request)
 
     # 静态文件不需要认证
@@ -150,9 +155,10 @@ async def auth_middleware(request: Request, call_next):
     if not auth_token:
         return await call_next(request)
 
-    # 校验 X-Claw-Token 头
-    provided_token = request.headers.get("X-Claw-Token", "")
-    if provided_token != auth_token:
+    # 校验 X-Claw-Token 头（所有方法含 GET 均需校验）
+    # 图片端点通过 <img src> 加载，无法附加自定义头，允许 ?token= 查询参数作为回退
+    provided_token = request.headers.get("X-Claw-Token", "") or request.query_params.get("token", "")
+    if not hmac.compare_digest(str(provided_token), str(auth_token)):
         return JSONResponse(
             status_code=401,
             content={
@@ -230,23 +236,82 @@ def _validate_file_id(file_id: str) -> None:
 
 
 def _is_internal_ip(host: str) -> bool:
-    """S05: 判断主机名是否为内网地址或 localhost"""
+    """S05: 判断主机名是否为内网地址或 localhost
+
+    同时检查主机名本身是否为内网 IP，以及域名解析后的 IP 是否为内网地址，
+    防止攻击者使用解析到内网 IP 的域名绕过 SSRF 防护。
+    """
     if host in ("localhost",):
         return True
     try:
         ip = ipaddress.ip_address(host)
-        # 私有地址 / 回环地址 / 链路本地地址
         return ip.is_private or ip.is_loopback or ip.is_link_local
     except ValueError:
-        # 非 IP 格式的主机名（如域名），检查常见内网名称
-        return False
+        pass
+
+    try:
+        ips = socket.getaddrinfo(host, None, socket.AF_INET)
+        for _, _, _, _, (ip_addr, _) in ips:
+            ip = ipaddress.ip_address(ip_addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return True
+    except (socket.gaierror, ValueError):
+        pass
+
+    try:
+        ips = socket.getaddrinfo(host, None, socket.AF_INET6)
+        for _, _, _, _, (ip_addr, _, _, _) in ips:
+            ip = ipaddress.ip_address(ip_addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return True
+    except (socket.gaierror, ValueError):
+        pass
+
+    return False
 
 
-def _validate_file_url(file_url: str) -> None:
+def _resolve_and_validate_ip(host: str) -> Optional[str]:
+    """B6: 解析主机名并校验 IP 安全性，返回首个公网 IP
+
+    一次性完成 DNS 解析和内网 IP 校验，避免二次解析导致 DNS 重绑定。
+    如果 host 是 localhost、内网 IP 或解析到内网 IP，返回 None。
+    """
+    if host in ("localhost",):
+        return None
+
+    # 如果 host 本身就是 IP 地址，直接校验
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            return None
+        return host  # 公网 IP，直接返回
+    except ValueError:
+        pass
+
+    # DNS 解析域名，返回首个公网 IP
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            infos = socket.getaddrinfo(host, None, family)
+            for _, _, _, _, sockaddr in infos:
+                ip_addr = sockaddr[0]
+                try:
+                    ip = ipaddress.ip_address(ip_addr)
+                    if not (ip.is_private or ip.is_loopback or ip.is_link_local):
+                        return ip_addr
+                except ValueError:
+                    continue
+        except (socket.gaierror, ValueError):
+            pass
+
+    return None
+
+
+def _validate_file_url(file_url: str) -> str:
     """S05: 校验 file_url，防止 SSRF 攻击
 
     - 必须以 https:// 开头
     - 拒绝 localhost 和内网 IP (10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x)
+    - B6: 返回校验通过的 IP 地址，调用方使用该 IP 发起请求以防止 DNS 重绑定
     """
     if not file_url:
         raise HTTPException(status_code=400, detail="fileUrl 参数必填")
@@ -263,11 +328,14 @@ def _validate_file_url(file_url: str) -> None:
         if not host:
             raise HTTPException(status_code=400, detail="fileUrl 主机名无效")
 
-        if _is_internal_ip(host):
+        # B6: 一次性解析并校验 IP，返回首个公网 IP 防止 DNS 重绑定
+        validated_ip = _resolve_and_validate_ip(host)
+        if validated_ip is None:
             raise HTTPException(
                 status_code=400,
                 detail="fileUrl 不允许指向内网地址或 localhost",
             )
+        return validated_ip
     except HTTPException:
         raise
     except Exception as e:
@@ -367,7 +435,7 @@ async def rate_limit_middleware(request: Request, call_next):
 
 def _safe_report_dir(report_id: str) -> Path:
     """安全获取报告目录路径，防止路径穿越攻击
-    
+
     将用户传入的 report_id 解析为 output_dir 下的绝对路径，
     并验证解析后的路径严格位于 output_dir 子树内且为目录类型。
     """
@@ -384,6 +452,24 @@ def _safe_report_dir(report_id: str) -> Path:
     if report_dir.exists() and not report_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"无效的报告 ID: {report_id}")
     return report_dir
+
+
+def _is_valid_report_id_format(report_id: str) -> bool:
+    """校验 report_id 格式是否合法（不抛异常，供批量端点过滤使用）
+
+    report_id 由 save_report 生成，格式为 ``YYYYMMDD_HHMMSS_<8hex>``，
+    也兼容旧格式 ``YYYYMMDD_HHMMSS``。仅允许字母、数字、下划线、连字符，
+    长度上限 64 字符。拒绝：
+      - 路径分隔符 (/, \\)
+      - 路径穿越 (..)
+      - Shell 元字符 (| ; ` $ > < & 等)
+    """
+    if not report_id:
+        return False
+    # 仅允许字母、数字、下划线、连字符，长度 1-64
+    if not re.match(r'^[A-Za-z0-9_\-]{1,64}$', report_id):
+        return False
+    return True
 
 
 def _safe_report_image_path(report_dir: Path, image_name: str) -> Path:
@@ -423,6 +509,22 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.get("/")
 async def root():
+    """根路径: 优先重定向到前端界面,前端不存在时返回 API 信息"""
+    frontend_path = Path(__file__).parent.parent / "frontend"
+    if frontend_path.exists():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/app/", status_code=302)
+    return {
+        "name": "错题管理系统",
+        "version": "1.2.0",
+        "status": "running",
+        "uptime": str(datetime.now() - SYSTEM_START_TIME),
+    }
+
+
+@app.get("/api/info")
+async def api_info():
+    """API 信息端点(原根路径功能)"""
     return {
         "name": "错题管理系统",
         "version": "1.2.0",
@@ -473,8 +575,8 @@ async def system_status():
         "uptime_seconds": (datetime.now() - SYSTEM_START_TIME).total_seconds(),
         "processed_count": ts.get_history_count(),
         "api_configured": bool(settings.paddleocr_api_key),
-        "upload_dir": settings.upload_dir,
-        "output_dir": settings.output_dir,
+        "upload_dir": Path(settings.upload_dir).name,
+        "output_dir": Path(settings.output_dir).name,
     }
 
 
@@ -490,8 +592,8 @@ async def get_config():
         "api_key_configured": has_key,
         "host": settings.host,
         "port": settings.port,
-        "upload_dir": settings.upload_dir,
-        "output_dir": settings.output_dir,
+        "upload_dir": Path(settings.upload_dir).name,
+        "output_dir": Path(settings.output_dir).name,
         "max_upload_size_mb": settings.max_upload_size_mb,
         "log_level": settings.log_level,
         "poll_interval": settings.poll_interval,
@@ -556,7 +658,74 @@ async def update_config(config: ConfigUpdateRequest):
         }
     except Exception as e:
         logger.error(f"配置更新失败: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e) if settings.debug else "配置更新失败")
+
+
+@app.get("/api/test-paddleocr")
+async def test_paddleocr_connection():
+    """测试 PaddleOCR API 连接是否正常
+
+    会向配置的 PaddleOCR API URL 发送一个轻量请求,验证:
+    1. API URL 是否可达
+    2. API Token 是否有效
+    """
+    if not settings.paddleocr_api_key:
+        return {
+            "success": False,
+            "error": "API Token 未配置",
+            "detail": "请在系统配置中设置 PaddleOCR API Key",
+        }
+
+    if not settings.paddleocr_api_url:
+        return {
+            "success": False,
+            "error": "API URL 未配置",
+            "detail": "请在系统配置中设置 PaddleOCR API URL",
+        }
+
+    import httpx
+    try:
+        headers = {"Authorization": f"Bearer {settings.paddleocr_api_key}"}
+        # 发送一个空的 GET 请求测试连通性和认证
+        # PaddleOCR API 对未认证请求返回 401,对认证请求返回 200 或 400(参数缺失)
+        async with httpx.AsyncClient(timeout=10) as client:
+            try:
+                response = await client.get(
+                    settings.paddleocr_api_url.rstrip("/"),
+                    headers=headers,
+                )
+                # 401/403 = Token 无效
+                if response.status_code in (401, 403):
+                    return {
+                        "success": False,
+                        "error": "API Token 无效或已过期",
+                        "detail": f"服务器返回 {response.status_code}，请检查 Token 是否正确",
+                    }
+                # 200/400/404 = 服务器可达,Token 有效(400=参数缺失属正常)
+                return {
+                    "success": True,
+                    "status_code": response.status_code,
+                    "detail": "API 连接正常，Token 有效",
+                }
+            except httpx.ConnectError:
+                return {
+                    "success": False,
+                    "error": "无法连接到 API 服务器",
+                    "detail": f"请检查 API URL 是否正确: {settings.paddleocr_api_url}",
+                }
+            except httpx.TimeoutException:
+                return {
+                    "success": False,
+                    "error": "API 请求超时",
+                    "detail": "服务器响应超过 10 秒,请检查网络或更换 API 地址",
+                }
+    except Exception as e:
+        logger.error(f"PaddleOCR API 测试失败: {e}")
+        return {
+            "success": False,
+            "error": "测试失败",
+            "detail": str(e) if settings.debug else "内部错误",
+        }
 
 
 @app.get("/api/history")
@@ -565,9 +734,10 @@ async def get_history(
     offset: int = Query(default=0, ge=0),
 ):
     # I02: 支持 offset 分页参数
-    items = ts.get_history(limit, offset)
+    # 性能优化：一次加锁同时获取数据和总数，避免两次锁竞争
+    items, total = ts.get_history_with_count(limit, offset)
     return {
-        "total": ts.get_history_count(),
+        "total": total,
         "offset": offset,
         "limit": limit,
         "items": items,
@@ -623,8 +793,11 @@ async def upload_image(file: UploadFile = File(...)):
         # I03: 校验文件头 Magic Bytes，防止伪装文件类型
         _check_magic_bytes(content)
 
-        with open(saved_path, "wb") as f:
-            f.write(content)
+        # B8: 同步文件写入 → asyncio.to_thread 避免阻塞事件循环
+        def _write_file(path, data):
+            with open(path, "wb") as f:
+                f.write(data)
+        await asyncio.to_thread(_write_file, saved_path, content)
 
         logger.info(f"文件上传成功: {file.filename} -> {saved_name} ({file_size / 1024:.1f}KB)")
 
@@ -665,8 +838,11 @@ async def submit_task(
     logger.info(f"提交异步任务: {file_path.name}")
 
     try:
-        with open(file_path, "rb") as f:
-            image_data = f.read()
+        # 性能优化: 使用 asyncio.to_thread 避免同步文件读取阻塞事件循环
+        def _read_file(path):
+            with open(path, "rb") as f:
+                return f.read()
+        image_data = await asyncio.to_thread(_read_file, file_path)
 
         submit_result = await asyncio.wait_for(
             paddle_service.submit_task(
@@ -816,6 +992,27 @@ async def poll_task_result(task_id: str):
             "completed": True,
         }
 
+    # 并发轮询互斥：防止同一 task_id 被多个请求同时处理
+    # （避免 TOCTOU 竞态导致重复 add_history / 重复 save_report / 终态覆盖）
+    if not ts.try_acquire_poll(task_id):
+        return {
+            "task_id": task_id,
+            "file_id": task_info["file_id"],
+            "filename": task_info["filename"],
+            "status": "processing",
+            "result": None,
+            "completed": False,
+            "progress": {"state": "polling", "message": "另一个轮询请求正在处理中"},
+        }
+
+    try:
+        return await _poll_task_result_inner(task_id, task_info)
+    finally:
+        ts.release_poll(task_id)
+
+
+async def _poll_task_result_inner(task_id: str, task_info: dict):
+    """poll_task_result 的核心逻辑（已获取轮询互斥权）"""
     # 卡死检测参数
     STUCK_THRESHOLD = 15
     last_extracted = task_info.get("_last_extracted_pages", -1)
@@ -905,7 +1102,7 @@ async def poll_task_result(task_id: str):
             "file_id": task_info["file_id"],
             "filename": task_info["filename"],
             "status": "error",
-            "error": str(e),
+            "error": str(e) if settings.debug else "轮询任务时发生错误",
             "completed": True,
         }
 
@@ -1078,8 +1275,11 @@ async def process_image(file_id: str):
     logger.info(f"开始处理（同步模式）: {file_path.name}")
 
     try:
-        with open(file_path, "rb") as f:
-            image_data = f.read()
+        # 性能优化: 使用 asyncio.to_thread 避免同步文件读取阻塞事件循环
+        def _read_file_sync(path):
+            with open(path, "rb") as f:
+                return f.read()
+        image_data = await asyncio.to_thread(_read_file_sync, file_path)
 
         # 总超时保护：submit_and_poll 内循环最多 600s，加 60s 余量
         result = await asyncio.wait_for(
@@ -1158,65 +1358,88 @@ async def upload_images_batch(files: List[UploadFile] = File(...)):
     if not files:
         raise HTTPException(status_code=400, detail="未选择任何文件")
 
-    results = []
+    # 限制单次批量请求的文件数量，防止 DoS
+    MAX_BATCH_FILES = 20
+    if len(files) > MAX_BATCH_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"批量上传文件数量不能超过 {MAX_BATCH_FILES} 个",
+        )
+
     allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp", "image/tiff", "application/pdf"}
     max_size = settings.max_upload_size_mb * 1024 * 1024
+    upload_path = settings.get_upload_path()
 
-    for file in files:
-        try:
-            if file.content_type and file.content_type not in allowed_types:
-                results.append({
-                    "original_name": file.filename,
-                    "success": False,
-                    "error": f"不支持的文件类型: {file.content_type}",
-                })
-                continue
+    # 性能优化：并发处理文件上传，Semaphore 限制并发数避免内存压力
+    _batch_semaphore = asyncio.Semaphore(4)
 
-            content = await file.read()
-            if len(content) > max_size:
-                results.append({
-                    "original_name": file.filename,
-                    "success": False,
-                    "error": f"文件过大: {len(content) / 1024 / 1024:.1f}MB",
-                })
-                continue
-
-            # I03: 校验文件头 Magic Bytes
+    async def _process_one_file(file: UploadFile) -> dict:
+        async with _batch_semaphore:
+            original_name = file.filename or "unknown"
             try:
-                _check_magic_bytes(content)
-            except HTTPException as mb_err:
-                results.append({
-                    "original_name": file.filename,
+                if file.content_type and file.content_type not in allowed_types:
+                    return {
+                        "original_name": original_name,
+                        "success": False,
+                        "error": f"不支持的文件类型: {file.content_type}",
+                    }
+
+                # 安全修复：先用 seek/tell 取文件大小，避免把超大文件整读进内存
+                # 与单文件端点 upload_image 保持一致
+                file.file.seek(0, 2)
+                file_size = file.file.tell()
+                file.file.seek(0)
+                if file_size > max_size:
+                    return {
+                        "original_name": original_name,
+                        "success": False,
+                        "error": f"文件过大: {file_size / 1024 / 1024:.1f}MB",
+                    }
+
+                content = await file.read()
+
+                # I03: 校验文件头 Magic Bytes
+                try:
+                    _check_magic_bytes(content)
+                except HTTPException as mb_err:
+                    return {
+                        "original_name": original_name,
+                        "success": False,
+                        "error": mb_err.detail,
+                    }
+
+                file_id = uuid.uuid4().hex
+                # 安全提取扩展名：使用 _extract_safe_extension 防止路径穿越
+                ext = _extract_safe_extension(original_name)
+                saved_name = f"{file_id}{ext}"
+                saved_path = upload_path / saved_name
+
+                # B8: 同步文件写入 → asyncio.to_thread 避免阻塞事件循环
+                def _write_batch_file(path, data):
+                    with open(path, "wb") as f:
+                        f.write(data)
+                await asyncio.to_thread(_write_batch_file, saved_path, content)
+
+                return {
+                    "success": True,
+                    "file_id": file_id,
+                    "original_name": original_name,
+                    "saved_name": saved_name,
+                    "size": file_size,
+                }
+
+            except Exception as e:
+                logger.error(f"批量上传中单个文件失败 [{original_name}]: {e}")
+                # 安全修复：生产模式隐藏内部异常细节，与单文件端点保持一致
+                error_detail = f"处理失败: {e}" if settings.debug else "处理失败"
+                return {
+                    "original_name": original_name,
                     "success": False,
-                    "error": mb_err.detail,
-                })
-                continue
+                    "error": error_detail,
+                }
 
-            upload_path = settings.get_upload_path()
-            file_id = uuid.uuid4().hex
-            # 安全提取扩展名：使用 _extract_safe_extension 防止路径穿越
-            ext = _extract_safe_extension(file.filename)
-            saved_name = f"{file_id}{ext}"
-            saved_path = upload_path / saved_name
-
-            with open(saved_path, "wb") as f:
-                f.write(content)
-
-            results.append({
-                "success": True,
-                "file_id": file_id,
-                "original_name": file.filename,
-                "saved_name": saved_name,
-                "size": len(content),
-            })
-
-        except Exception as e:
-            logger.error(f"批量上传中单个文件失败 [{file.filename}]: {e}")
-            results.append({
-                "original_name": file.filename,
-                "success": False,
-                "error": str(e),
-            })
+    # 并发处理所有文件，gather 保证结果顺序与输入一致
+    results = await asyncio.gather(*[_process_one_file(f) for f in files])
 
     succeeded = sum(1 for r in results if r["success"])
     logger.info(f"批量上传完成: {succeeded}/{len(files)} 成功")
@@ -1242,21 +1465,26 @@ async def upload_and_process(file: UploadFile = File(...)):
 async def list_reports(limit: int = Query(default=50, le=200)):
     """列出所有报告"""
     output_dir = settings.get_output_path()
-    reports = []
 
-    if output_dir.exists():
-        for report_dir in sorted(output_dir.iterdir(), reverse=True):
-            if report_dir.is_dir():
-                md_file = report_dir / "report.md"
-                reports.append({
-                    "id": report_dir.name,
-                    "has_markdown": md_file.exists(),
-                    "created_time": datetime.fromtimestamp(
-                        report_dir.stat().st_ctime
-                    ).isoformat(),
-                })
-                if len(reports) >= limit:
-                    break
+    # B8: 同步目录遍历 → asyncio.to_thread 避免阻塞事件循环
+    def _scan_reports(out_dir, max_count):
+        result = []
+        if out_dir.exists():
+            for report_dir in sorted(out_dir.iterdir(), reverse=True):
+                if report_dir.is_dir():
+                    md_file = report_dir / "report.md"
+                    result.append({
+                        "id": report_dir.name,
+                        "has_markdown": md_file.exists(),
+                        "created_time": datetime.fromtimestamp(
+                            report_dir.stat().st_ctime
+                        ).isoformat(),
+                    })
+                    if len(result) >= max_count:
+                        break
+        return result
+
+    reports = await asyncio.to_thread(_scan_reports, output_dir, limit)
 
     return {"total": len(reports), "reports": reports}
 
@@ -1270,8 +1498,11 @@ async def get_report(report_id: str):
     if not md_file.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
 
-    with open(md_file, "r", encoding="utf-8") as f:
-        content = f.read()
+    # B8: 同步文件读取 → asyncio.to_thread 避免阻塞事件循环
+    def _read_file(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    content = await asyncio.to_thread(_read_file, md_file)
 
     # M02: 不返回内部文件系统路径，仅返回 report_id
     return {"id": report_id, "content": content}
@@ -1286,22 +1517,33 @@ async def download_report_zip(report_id: str):
     if not md_file.exists():
         raise HTTPException(status_code=404, detail="报告不存在")
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(md_file, "report.md")
-        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-        # 同级目录图片
-        for file_path in report_dir.iterdir():
-            if file_path.is_file() and file_path.suffix.lower() in image_extensions:
-                zf.write(file_path, file_path.name)
-        # imgs/ 子目录图片
-        imgs_dir = report_dir / "imgs"
-        if imgs_dir.exists():
-            for file_path in imgs_dir.iterdir():
-                if file_path.is_file() and file_path.suffix.lower() in image_extensions:
-                    zf.write(file_path, f"imgs/{file_path.name}")
+    # 性能优化: 将同步 ZIP 打包移到线程中，避免阻塞事件循环
+    def _build_zip(r_dir, m_file):
+        buf = io.BytesIO()
+        included_files = []
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(m_file, "report.md")
+            included_files.append("report.md")
+            image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+            # 同级目录文件（layout_analysis.png, original.png, layout_report.md, api_response.json 等）
+            for file_path in r_dir.iterdir():
+                if file_path.is_file() and file_path.name != "report.md":
+                    zf.write(file_path, file_path.name)
+                    included_files.append(file_path.name)
+            # imgs/ 子目录图片
+            imgs_dir = r_dir / "imgs"
+            if imgs_dir.exists():
+                for file_path in imgs_dir.iterdir():
+                    if file_path.is_file():
+                        zf.write(file_path, f"imgs/{file_path.name}")
+                        included_files.append(f"imgs/{file_path.name}")
+            else:
+                logger.warning(f"报告 {report_id} 的 imgs/ 目录不存在，ZIP 将不包含图片")
+        buf.seek(0)
+        logger.info(f"报告 {report_id} ZIP 打包完成，包含 {len(included_files)} 个文件: {included_files}")
+        return buf
 
-    zip_buffer.seek(0)
+    zip_buffer = await asyncio.to_thread(_build_zip, report_dir, md_file)
     # L22: 使用 urllib.parse.quote 编码 ZIP 文件名，支持非 ASCII 字符
     encoded_filename = quote(f"report_{report_id}.zip")
     return StreamingResponse(
@@ -1332,33 +1574,52 @@ async def download_batch_zip(request_data: BatchDownloadRequest):
             detail=f"批量下载数量不能超过 {MAX_BATCH_DOWNLOAD} 个报告",
         )
 
-    zip_buffer = io.BytesIO()
-    image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for report_id in report_ids:
-            # 使用 _safe_report_dir 防止路径穿越攻击
-            report_dir = _safe_report_dir(report_id)
-            if not report_dir.exists():
-                logger.warning(f"批量下载: 报告目录不存在 {report_id}")
-                continue
-            # 打包根目录文件
-            for file_path in report_dir.iterdir():
-                if file_path.is_file() and file_path.suffix.lower() in image_extensions:
-                    zf.write(file_path, f"{report_id}/{file_path.name}")
-                elif file_path.is_file() and file_path.name != "report.md":
-                    zf.write(file_path, f"{report_id}/{file_path.name}")
-            # 打包 imgs/ 子目录（保留路径结构）
-            md_file = report_dir / "report.md"
-            if md_file.exists():
-                zf.write(md_file, f"{report_id}/report.md")
-            imgs_dir = report_dir / "imgs"
-            if imgs_dir.exists():
-                for file_path in imgs_dir.iterdir():
-                    if file_path.is_file() and file_path.suffix.lower() in image_extensions:
-                        zf.write(file_path, f"{report_id}/imgs/{file_path.name}")
+    # 过滤掉格式非法的 report_id（路径穿越、Shell 元字符等）
+    # 若全部 ID 均非法，返回 400；若部分非法，仅打包合法的
+    valid_ids = [rid for rid in report_ids if _is_valid_report_id_format(rid)]
+    if not valid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="所有报告 ID 格式均非法",
+        )
+    if len(valid_ids) < len(report_ids):
+        skipped = len(report_ids) - len(valid_ids)
+        logger.warning(f"批量下载: 已跳过 {skipped} 个格式非法的报告 ID")
 
-    zip_buffer.seek(0)
-    logger.info(f"批量下载: {len(report_ids)} 个报告已打包")
+    # 性能优化: 将同步 ZIP 打包移到线程中，避免阻塞事件循环
+    def _build_batch_zip(r_ids):
+        buf = io.BytesIO()
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for rid in r_ids:
+                # 安全修复：_safe_report_dir 可能因"同名普通文件"等场景抛 HTTPException，
+                # 用 try/except 包裹并跳过该条目，与 batch_delete_reports 行为一致
+                try:
+                    r_dir = _safe_report_dir(rid)
+                except HTTPException as e:
+                    logger.warning(f"批量下载: 跳过无效报告 ID {rid}: {e.detail}")
+                    continue
+                if not r_dir.exists():
+                    logger.warning(f"批量下载: 报告目录不存在 {rid}")
+                    continue
+                for file_path in r_dir.iterdir():
+                    if file_path.is_file() and file_path.suffix.lower() in image_exts:
+                        zf.write(file_path, f"{rid}/{file_path.name}")
+                    elif file_path.is_file() and file_path.name != "report.md":
+                        zf.write(file_path, f"{rid}/{file_path.name}")
+                md_file = r_dir / "report.md"
+                if md_file.exists():
+                    zf.write(md_file, f"{rid}/report.md")
+                imgs_dir = r_dir / "imgs"
+                if imgs_dir.exists():
+                    for file_path in imgs_dir.iterdir():
+                        if file_path.is_file() and file_path.suffix.lower() in image_exts:
+                            zf.write(file_path, f"{rid}/imgs/{file_path.name}")
+        buf.seek(0)
+        return buf
+
+    zip_buffer = await asyncio.to_thread(_build_batch_zip, valid_ids)
+    logger.info(f"批量下载: {len(valid_ids)} 个报告已打包")
     # L22: 使用 urllib.parse.quote 编码 ZIP 文件名
     encoded_batch_filename = quote("batch_reports.zip")
     return StreamingResponse(
@@ -1382,7 +1643,8 @@ async def download_batch_layout_report(request_data: BatchLayoutRequest):
         raise HTTPException(status_code=400, detail="未提供文件数据")
 
     now = datetime.now()
-    total_items = sum(len(f.get("layout_items", [])) for f in files)
+    # QA修复: Pydantic v2 BaseModel 没有 .get() 方法，使用属性访问
+    total_items = sum(len(f.layout_items) for f in files)
 
     lines = []
     lines.append("# 批量版面分析报告")
@@ -1397,9 +1659,9 @@ async def download_batch_layout_report(request_data: BatchLayoutRequest):
     lines.append("")
 
     for file_idx, file_data in enumerate(files, 1):
-        filename = file_data.get("filename", f"文件{file_idx}")
-        layout_items = file_data.get("layout_items", [])
-        processing_time = file_data.get("processing_time", 0)
+        filename = file_data.filename or f"文件{file_idx}"
+        layout_items = file_data.layout_items
+        processing_time = file_data.processing_time
 
         # M31: 转义文件名中的 Markdown 特殊字符
         safe_filename = filename
@@ -1422,6 +1684,8 @@ async def download_batch_layout_report(request_data: BatchLayoutRequest):
             lines.append("|------|------|----------|----------|")
             for idx, item in enumerate(layout_items, 1):
                 item_type = item.get("type", "unknown")
+                # B4: 转义 item_type 中的 Markdown/XSS 特殊字符（与 filename 转义一致）
+                item_type = str(item_type).replace("|", "\\|").replace("`", "\\`").replace("<", "&lt;").replace(">", "&gt;")
                 region = item.get("region", {})
                 region_str = ""
                 if region:
@@ -1438,6 +1702,8 @@ async def download_batch_layout_report(request_data: BatchLayoutRequest):
                 preview = item.get("content_preview", "")
                 if preview:
                     preview = str(preview).replace("|", "\\|").replace("\n", " ")
+                    # B4: 转义 content_preview 中的 XSS 特殊字符（与 filename 转义一致）
+                    preview = preview.replace("`", "\\`").replace("<", "&lt;").replace(">", "&gt;")
                     if len(preview) > 80:
                         preview = preview[:80] + "..."
                 else:
@@ -1499,7 +1765,8 @@ async def delete_report(report_id: str):
         )
 
     try:
-        shutil.rmtree(report_dir)
+        # 性能优化: 使用 asyncio.to_thread 避免同步 rmtree 阻塞事件循环
+        await asyncio.to_thread(shutil.rmtree, report_dir)
         logger.info(f"报告已删除: {report_id}")
         return {"success": True, "message": f"报告 {report_id} 已删除"}
     except FileNotFoundError:

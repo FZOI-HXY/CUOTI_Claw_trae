@@ -574,6 +574,150 @@ class TestSecurityUtils:
             ]
             assert backend._is_internal_ip("good-domain.com") is False
 
+    def test_resolve_and_validate_ip_returns_public_ip(self):
+        """_resolve_and_validate_ip 应返回首个公网 IP（防 DNS 重绑定）"""
+        import importlib.util
+        import socket
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_resolve",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = [
+                [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0))],
+                socket.gaierror,
+            ]
+            result = backend._resolve_and_validate_ip("example.com")
+            assert result == "93.184.216.34"
+
+    def test_resolve_and_validate_ip_rejects_localhost(self):
+        """_resolve_and_validate_ip 应拒绝 localhost"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_resolve_localhost",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        result = backend._resolve_and_validate_ip("localhost")
+        assert result is None
+
+    def test_resolve_and_validate_ip_rejects_internal_ip(self):
+        """_resolve_and_validate_ip 应拒绝内网 IP"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_resolve_internal",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        assert backend._resolve_and_validate_ip("127.0.0.1") is None
+        assert backend._resolve_and_validate_ip("192.168.1.1") is None
+        assert backend._resolve_and_validate_ip("10.0.0.1") is None
+        assert backend._resolve_and_validate_ip("172.16.0.1") is None
+        assert backend._resolve_and_validate_ip("::1") is None
+
+    def test_resolve_and_validate_ip_rejects_domain_resolving_to_internal(self):
+        """_resolve_and_validate_ip 应拒绝解析到内网 IP 的域名（防 DNS 重绑定）"""
+        import importlib.util
+        import socket
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_resolve_dns",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = [
+                [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.168.1.100", 0))],
+                socket.gaierror,
+            ]
+            result = backend._resolve_and_validate_ip("evil-ssrf.example.com")
+            assert result is None
+
+    def test_resolve_and_validate_ip_returns_first_public_ip_from_multiple(self):
+        """_resolve_and_validate_ip 应从多个 IP 中返回首个公网 IP"""
+        import importlib.util
+        import socket
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_resolve_multi",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = [
+                [
+                    (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.168.1.1", 0)),
+                    (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0)),
+                    (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.0.0.1", 0)),
+                ],
+                socket.gaierror,
+            ]
+            result = backend._resolve_and_validate_ip("mixed-ips.example.com")
+            assert result == "93.184.216.34"
+
+    def test_resolve_and_validate_ip_returns_ipv6_public(self):
+        """_resolve_and_validate_ip 应正确处理 IPv6 公网地址"""
+        import importlib.util
+        import socket
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_resolve_ipv6",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = [
+                socket.gaierror,
+                [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2606:2800:220:1:248:1893:25c8:1946", 0, 0, 0))],
+            ]
+            result = backend._resolve_and_validate_ip("ipv6.example.com")
+            assert result == "2606:2800:220:1:248:1893:25c8:1946"
+
+    def test_resolve_and_validate_ip_rejects_ipv6_local(self):
+        """_resolve_and_validate_ip 应拒绝 IPv6 本地地址"""
+        import importlib.util
+        import socket
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_resolve_ipv6_local",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = [
+                socket.gaierror,
+                [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("fc00::1", 0, 0, 0))],
+            ]
+            result = backend._resolve_and_validate_ip("local-ipv6.example.com")
+            assert result is None
+
+    def test_resolve_and_validate_ip_dns_failure_returns_none(self):
+        """DNS 解析失败时应返回 None"""
+        import importlib.util
+        import socket
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_resolve_fail",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = socket.gaierror
+            result = backend._resolve_and_validate_ip("non-existent-domain-xyz123.com")
+            assert result is None
+
     def test_validate_file_url_valid(self):
         """_validate_file_url 应接受有效 URL"""
         import importlib.util
@@ -684,7 +828,136 @@ class TestSecurityUtils:
 
 
 # ──────────────────────────────────────────────────
-# 9.5 report_id 格式校验测试
+# 9.5 _safe_report_dir 安全路径校验测试
+# ──────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestSafeReportDir:
+    """测试 _safe_report_dir 函数的路径安全校验"""
+
+    def test_safe_report_dir_valid_id(self, temp_dir):
+        """有效 report_id 应返回正确的目录路径"""
+        import importlib.util
+        from fastapi import HTTPException
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_safe_dir",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        from apps.web.api.config import settings
+        original_output = settings.output_dir
+        settings.output_dir = str(temp_dir / "output")
+        Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
+
+        try:
+            valid_id = "20260613_235614_a1b2c3d4"
+            result = backend._safe_report_dir(valid_id)
+            expected = Path(settings.output_dir) / valid_id
+            assert result.resolve() == expected.resolve()
+        finally:
+            settings.output_dir = original_output
+
+    def test_safe_report_dir_empty_id(self):
+        """空 report_id 应返回 400"""
+        import importlib.util
+        from fastapi import HTTPException
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_safe_dir_empty",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with pytest.raises(HTTPException) as exc_info:
+            backend._safe_report_dir("")
+        assert exc_info.value.status_code == 400
+
+    def test_safe_report_dir_path_traversal(self, temp_dir):
+        """路径穿越攻击应被阻止"""
+        import importlib.util
+        from fastapi import HTTPException
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_safe_dir_traverse",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        from apps.web.api.config import settings
+        original_output = settings.output_dir
+        settings.output_dir = str(temp_dir / "output")
+        Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
+
+        try:
+            malicious_ids = [
+                "../../etc/passwd",
+                "../secret",
+                "..\\windows\\system32",
+                "output/../../etc/passwd",
+            ]
+            for mid in malicious_ids:
+                with pytest.raises(HTTPException) as exc_info:
+                    backend._safe_report_dir(mid)
+                assert exc_info.value.status_code == 400, f"应拒绝路径穿越: {mid}"
+        finally:
+            settings.output_dir = original_output
+
+    def test_safe_report_dir_rejects_file_as_dir(self, temp_dir):
+        """同名普通文件应被拒绝（防止误删文件）"""
+        import importlib.util
+        from fastapi import HTTPException
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_safe_dir_file",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        from apps.web.api.config import settings
+        original_output = settings.output_dir
+        settings.output_dir = str(temp_dir / "output")
+        Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
+
+        try:
+            file_path = Path(settings.output_dir) / "fake_report"
+            file_path.write_text("not a directory")
+
+            with pytest.raises(HTTPException) as exc_info:
+                backend._safe_report_dir("fake_report")
+            assert exc_info.value.status_code == 400
+        finally:
+            settings.output_dir = original_output
+            if file_path.exists():
+                file_path.unlink()
+
+    def test_safe_report_dir_non_existent_valid_id(self, temp_dir):
+        """不存在但格式有效的 report_id 应返回路径（不报错，供后续创建）"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_safe_dir_nonexist",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        from apps.web.api.config import settings
+        original_output = settings.output_dir
+        settings.output_dir = str(temp_dir / "output")
+        Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
+
+        try:
+            valid_id = "non_existent_report"
+            result = backend._safe_report_dir(valid_id)
+            expected = Path(settings.output_dir) / valid_id
+            assert result.resolve() == expected.resolve()
+        finally:
+            settings.output_dir = original_output
+
+
+# ──────────────────────────────────────────────────
+# 9.6 report_id 格式校验测试
 # ──────────────────────────────────────────────────
 
 
@@ -789,21 +1062,36 @@ class TestAuthMiddleware:
         finally:
             settings.claw_auth_token = original_token
 
-    def test_auth_middleware_exempt_for_get_requests(self, temp_dir, load_backend_app):
-        """GET 请求不需要认证"""
+    def test_auth_middleware_protects_get_business_endpoints(self, temp_dir, load_backend_app):
+        """F-001 修复：GET 请求访问业务端点需要认证（不再全局豁免）"""
         from apps.web.api.config import settings
         original_token = settings.claw_auth_token
         settings.claw_auth_token = "test_token_for_auth"
         try:
-            backend = load_backend_app(temp_dir, "auth_get_exempt")
+            backend = load_backend_app(temp_dir, "auth_get_protect")
             client = TestClient(backend.app)
 
-            # GET 请求不需要 token
+            # GET 业务端点无 token 应返回 401
             resp = client.get("/api/config")
-            assert resp.status_code == 200, "GET 请求不需要认证"
+            assert resp.status_code == 401, "GET /api/config 无 token 应返回 401"
 
             resp = client.get("/api/history")
-            assert resp.status_code == 200
+            assert resp.status_code == 401, "GET /api/history 无 token 应返回 401"
+
+            resp = client.get("/api/reports")
+            assert resp.status_code == 401, "GET /api/reports 无 token 应返回 401"
+
+            # 带正确 token 的 GET 请求应通过
+            resp = client.get("/api/config", headers={"X-Claw-Token": "test_token_for_auth"})
+            assert resp.status_code == 200, "GET /api/config 带正确 token 应返回 200"
+
+            # ?token= 查询参数也应通过（图片端点回退）
+            resp = client.get("/api/config?token=test_token_for_auth")
+            assert resp.status_code == 200, "GET /api/config?token= 查询参数应返回 200"
+
+            # 错误 token 应返回 401
+            resp = client.get("/api/config?token=wrong_token")
+            assert resp.status_code == 401, "GET /api/config?token=wrong 应返回 401"
         finally:
             settings.claw_auth_token = original_token
 
@@ -919,3 +1207,103 @@ class TestMarkdownLengthLimit:
         assert "<h1>" in html
         # 不应出现长度限制警告
         assert "过长" not in html
+
+
+# ──────────────────────────────────────────────────
+# 13. 速率限制存储清理测试
+# ──────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestCleanupRateLimitStore:
+    """测试 _cleanup_rate_limit_store 函数的内存泄漏防护"""
+
+    def test_cleanup_rate_limit_store_removes_expired_entries(self):
+        """应移除过期的速率限制条目"""
+        import importlib.util
+        import time
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_cleanup",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        window = backend.settings.rate_limit_window
+        now = time.time()
+
+        backend._rate_limit_store = {
+            "client1": [now - window - 10],
+            "client2": [now - 10],
+            "client3": [now],
+        }
+
+        backend._cleanup_rate_limit_store()
+
+        assert "client1" not in backend._rate_limit_store
+        assert "client2" in backend._rate_limit_store
+        assert "client3" in backend._rate_limit_store
+
+    def test_cleanup_rate_limit_store_removes_entries_exceeding_max_age(self):
+        """应移除超过最大存活时间的条目"""
+        import importlib.util
+        import time
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_cleanup_max",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        window = backend.settings.rate_limit_window
+        now = time.time()
+
+        backend._rate_limit_store = {}
+        for i in range(100):
+            backend._rate_limit_store[f"client{i}"] = [now - (window + 10 - i)]
+
+        backend._cleanup_rate_limit_store()
+
+        for key in backend._rate_limit_store:
+            for ts in backend._rate_limit_store[key]:
+                assert now - ts < window
+
+    def test_cleanup_rate_limit_store_handles_empty_store(self):
+        """空存储应被正确处理"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_cleanup_empty",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        backend._rate_limit_store = {}
+        backend._cleanup_rate_limit_store()
+        assert backend._rate_limit_store == {}
+
+    def test_cleanup_rate_limit_store_preserves_fresh_entries(self):
+        """应保留新鲜的条目"""
+        import importlib.util
+        import time
+        spec = importlib.util.spec_from_file_location(
+            "backend_main_cleanup_fresh",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        window = backend.settings.rate_limit_window
+        now = time.time()
+
+        backend._rate_limit_store = {
+            "client1": [now - window + 10, now - window + 5],
+            "client2": [now - 1],
+        }
+
+        backend._cleanup_rate_limit_store()
+
+        assert "client1" in backend._rate_limit_store
+        assert len(backend._rate_limit_store["client1"]) == 2
+        assert "client2" in backend._rate_limit_store
+        assert len(backend._rate_limit_store["client2"]) == 1

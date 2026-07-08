@@ -145,8 +145,8 @@ class TestAuthTokenMechanism:
         os.environ["CLAW_AUTH_TOKEN"] = "test_token_abc123"
         assert _get_auth_token() == "test_token_abc123"
 
-    def test_get_auth_headers_for_post_delete_put(self, temp_env):
-        """_get_auth_headers 仅对 POST/DELETE/PUT 添加 token"""
+    def test_get_auth_headers_for_all_methods(self, temp_env):
+        """F-001 修复：_get_auth_headers 对所有方法（含 GET）添加 token"""
         from apps.desktop.workers.api_task import _get_auth_headers
 
         os.environ["CLAW_AUTH_TOKEN"] = "secret_token_xyz"
@@ -161,9 +161,9 @@ class TestAuthTokenMechanism:
         put_headers = _get_auth_headers("PUT")
         assert put_headers.get("X-Claw-Token") == "secret_token_xyz"
 
-        # GET 不应包含 token
+        # F-001 修复：GET 也应包含 token（后端不再全局豁免 GET）
         get_headers = _get_auth_headers("GET")
-        assert "X-Claw-Token" not in get_headers
+        assert get_headers.get("X-Claw-Token") == "secret_token_xyz"
 
     def test_get_auth_headers_empty_when_no_token(self, temp_env):
         """未设置 token 时 _get_auth_headers 返回空字典"""

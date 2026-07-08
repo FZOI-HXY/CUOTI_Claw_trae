@@ -81,7 +81,8 @@ class _SelfPreservingThread(QThread):
 # ---------------------------------------------------------------------------
 
 _executor = ThreadPoolExecutor(max_workers=4)
-atexit.register(_executor.shutdown)
+# atexit 时用 wait=False 避免进程挂起（默认 wait=True 会阻塞等待所有 pending future）
+atexit.register(lambda: _executor.shutdown(wait=False))
 
 
 def _get_auth_token() -> str:
@@ -90,12 +91,14 @@ def _get_auth_token() -> str:
 
 
 def _get_auth_headers(method: str) -> dict:
-    """S06: 获取认证请求头（仅对状态变更操作添加 token）"""
+    """S06: 获取认证请求头（所有方法均添加 token）
+
+    安全说明（F-001 修复）：GET 请求也需要携带 token，因为后端不再全局豁免 GET。
+    """
     headers = {}
-    if method in ("POST", "DELETE", "PUT"):
-        token = _get_auth_token()
-        if token:
-            headers["X-Claw-Token"] = token
+    token = _get_auth_token()
+    if token:
+        headers["X-Claw-Token"] = token
     return headers
 
 

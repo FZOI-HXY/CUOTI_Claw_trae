@@ -16,6 +16,7 @@
         processing: false,
         batchResults: [],       // 批量处理结果汇总
         serverConnected: false,
+        clawToken: null,        // /api/init 获取的本地认证 token（CSRF 双重提交）
     };
 
     // ============ DOM引用 ============
@@ -78,6 +79,17 @@
         setTimeout(() => toast.remove(), 3200);
     }
 
+    // ============ CSRF / 本地认证 ============
+    // 为写操作（POST/DELETE/PUT）请求附加 X-Claw-Token 头（双重提交 token，防止 CSRF）。
+    // token 由 /api/init 返回；后端未配置 token 时为开发模式，不启用认证。
+    function authHeaders(extra) {
+        const headers = Object.assign({}, extra || {});
+        if (state.clawToken) {
+            headers['X-Claw-Token'] = state.clawToken;
+        }
+        return headers;
+    }
+
     // ============ 粒子背景 ============
     function initParticles() {
         // 检测 prefers-reduced-motion
@@ -96,7 +108,8 @@
         }
 
         function createParticles() {
-            const count = Math.floor((canvas.width * canvas.height) / 15000);
+            // 性能优化：限制粒子数量上限，避免高分屏下 O(n²) 配对检查过重
+            const count = Math.min(Math.floor((canvas.width * canvas.height) / 15000), 150);
             particles = [];
             for (let i = 0; i < count; i++) {
                 particles.push({
@@ -125,16 +138,20 @@
                 ctx.fill();
             });
 
+            // 性能优化：使用平方距离比较避免 Math.sqrt（仅在需要绘制时才算 sqrt）
+            const CONNECT_DIST = 120;
+            const CONNECT_DIST_SQ = CONNECT_DIST * CONNECT_DIST;
             for (let i = 0; i < particles.length; i++) {
                 for (let j = i + 1; j < particles.length; j++) {
                     const dx = particles[i].x - particles[j].x;
                     const dy = particles[i].y - particles[j].y;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist < 120) {
+                    const distSq = dx * dx + dy * dy;
+                    if (distSq < CONNECT_DIST_SQ) {
+                        const dist = Math.sqrt(distSq);
                         ctx.beginPath();
                         ctx.moveTo(particles[i].x, particles[i].y);
                         ctx.lineTo(particles[j].x, particles[j].y);
-                        ctx.strokeStyle = `rgba(245, 158, 11, ${0.06 * (1 - dist / 120)})`;
+                        ctx.strokeStyle = `rgba(245, 158, 11, ${0.06 * (1 - dist / CONNECT_DIST)})`;
                         ctx.stroke();
                     }
                 }
@@ -526,19 +543,24 @@
         // ====== 阶段1: 批量上传全部文件 ======
         updateBatchProgress(0, total, '批量上传中…');
 
-        for (let i = 0; i < state.fileQueue.length; i++) {
-            const item = state.fileQueue[i];
-            try {
-                const result = await uploadFile(item);
-                item.fileId = result.file_id;
-                item.status = 'uploaded';
-            } catch (err) {
-                item.status = 'error';
-                item.error = err.message;
-            }
-            updateBatchProgress(0, total, `上传: ${i + 1}/${total}`);
-            renderQueue();
-        }
+        // 性能优化：并发上传所有文件（浏览器自动限制同源并发连接数约 6 个）
+        let uploadDone = 0;
+        updateBatchProgress(0, total, `上传 0/${total}…`);
+        await Promise.allSettled(
+            state.fileQueue.map(async (item) => {
+                try {
+                    const result = await uploadFile(item);
+                    item.fileId = result.file_id;
+                    item.status = 'uploaded';
+                } catch (err) {
+                    item.status = 'error';
+                    item.error = err.message;
+                }
+                uploadDone++;
+                updateBatchProgress(0, total, `上传: ${uploadDone}/${total}`);
+                renderQueue();
+            })
+        );
 
         setStepCompleted('upload');
         setStepActive('analyze');
@@ -555,7 +577,7 @@
                 item.status = 'submitting';
                 renderQueue();
                 try {
-                    const res = await fetch(`${API_BASE}/api/submit/${item.fileId}`, { method: 'POST' });
+                    const res = await fetch(`${API_BASE}/api/submit/${item.fileId}`, { method: 'POST', headers: authHeaders() });
                     if (!res.ok) {
                         let err;
                         try { err = await res.json(); } catch { throw new Error(res.statusText || '提交失败'); }
@@ -609,7 +631,7 @@
                     .filter(item => item.status === 'processing')
                     .map(async (item) => {
                         try {
-                            const res = await fetch(`${API_BASE}/api/poll/${item.taskId}`, { method: 'POST' });
+                            const res = await fetch(`${API_BASE}/api/poll/${item.taskId}`, { method: 'POST', headers: authHeaders() });
                             const data = await res.json();
                             return { item, data };
                         } catch (err) {
@@ -734,6 +756,7 @@
 
         const uploadRes = await fetch(`${API_BASE}/api/upload`, {
             method: 'POST',
+            headers: authHeaders(),
             body: formData,
         });
 
@@ -947,7 +970,12 @@
             if (reportId) {
                 // 去掉可能的前导 ./ 或多余的 imgs/ 前缀（统一由 API 处理）
                 let cleanSrc = src.replace(/^\.\//, '');
-                return `${API_BASE}/api/report/${reportId}/image/${encodeURI(cleanSrc)}`;
+                let url = `${API_BASE}/api/report/${reportId}/image/${encodeURI(cleanSrc)}`;
+                // F-001 修复：图片通过 <img src> 加载，无法附加自定义头，用 query param 传递 token
+                if (state.clawToken) {
+                    url += `?token=${encodeURIComponent(state.clawToken)}`;
+                }
+                return url;
             }
             return src;
         }
@@ -958,7 +986,9 @@
             .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
             .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
             .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
-            .replace(/javascript:/gi, '');
+            .replace(/javascript:/gi, '')
+            // 剥离潜在的危险 HTML 标签（保留 img/br/hr，Markdown 可能生成这些）
+            .replace(/<(?!\/?(?:img|br|hr)\b)[a-zA-Z/][^>]*>/gi, '');
 
         let html = sanitized
             // 先处理 HTML img 标签（PP-StructureV3 输出中可能包含）
@@ -1024,7 +1054,7 @@
         try {
             const res = await fetch(`${API_BASE}/api/batch/download`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ report_ids: reportIds }),
             });
             if (!res.ok) {
@@ -1069,7 +1099,7 @@
         try {
             const res = await fetch(`${API_BASE}/api/batch/download-layout`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ files }),
             });
             if (!res.ok) {
@@ -1093,7 +1123,7 @@
     // ============ 历史记录 ============
     async function loadHistory(signal) {
         try {
-            const res = await fetch(`${API_BASE}/api/history?limit=50`, { signal });
+            const res = await fetch(`${API_BASE}/api/history?limit=50`, { signal, headers: authHeaders() });
             if (!res.ok) {
                 throw new Error(res.statusText || '加载历史记录失败');
             }
@@ -1153,7 +1183,7 @@
 
     async function loadReports(signal) {
         try {
-            const res = await fetch(`${API_BASE}/api/reports?limit=50`, { signal });
+            const res = await fetch(`${API_BASE}/api/reports?limit=50`, { signal, headers: authHeaders() });
             if (!res.ok) {
                 throw new Error(res.statusText || '加载报告列表失败');
             }
@@ -1201,7 +1231,7 @@
 
     async function viewReport(reportId) {
         try {
-            const res = await fetch(`${API_BASE}/api/report/${encodeURIComponent(reportId)}`);
+            const res = await fetch(`${API_BASE}/api/report/${encodeURIComponent(reportId)}`, { headers: authHeaders() });
             const data = await res.json();
             if (window.MathJax && window.MathJax.typesetClear) {
                 window.MathJax.typesetClear([dom.mdContent]);
@@ -1223,7 +1253,7 @@
 
     async function downloadReportById(reportId) {
         try {
-            const res = await fetch(`${API_BASE}/api/report/${encodeURIComponent(reportId)}/download`);
+            const res = await fetch(`${API_BASE}/api/report/${encodeURIComponent(reportId)}/download`, { headers: authHeaders() });
             if (!res.ok) {
                 toast('下载失败', 'error');
                 return;
@@ -1243,7 +1273,7 @@
 
     async function deleteReport(reportId) {
         try {
-            const res = await fetch(`${API_BASE}/api/report/${encodeURIComponent(reportId)}`, { method: 'DELETE' });
+            const res = await fetch(`${API_BASE}/api/report/${encodeURIComponent(reportId)}`, { method: 'DELETE', headers: authHeaders() });
             if (!res.ok) {
                 throw new Error(res.statusText || '删除失败');
             }
@@ -1262,7 +1292,7 @@
     // ============ 系统配置 ============
     async function loadConfig() {
         try {
-            const res = await fetch(`${API_BASE}/api/config`);
+            const res = await fetch(`${API_BASE}/api/config`, { headers: authHeaders() });
             if (!res.ok) {
                 throw new Error(res.statusText || '加载配置失败');
             }
@@ -1278,7 +1308,11 @@
             $('#cfg-log-level').value = config.log_level || 'INFO';
 
             if (config.api_key_configured) {
-                $('#cfg-api-key').placeholder = config.api_key_prefix + ' (已配置)';
+                $('#cfg-api-key').placeholder = '已配置（输入新值可覆盖）';
+                $('#cfg-api-key').dataset.configured = 'true';
+            } else {
+                $('#cfg-api-key').placeholder = '请输入 PaddleOCR API Key';
+                delete $('#cfg-api-key').dataset.configured;
             }
         } catch (error) {
             console.error('加载配置失败:', error);
@@ -1292,7 +1326,7 @@
         try {
             const res = await fetch(`${API_BASE}/api/config`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify(data),
             });
             if (!res.ok) {
@@ -1310,17 +1344,30 @@
     }
 
     async function testApiConnection() {
-        toast('正在测试API连接…', 'info');
+        toast('正在测试 PaddleOCR API 连接…', 'info');
         try {
-            const res = await fetch(`${API_BASE}/api/health`);
+            const res = await fetch(`${API_BASE}/api/test-paddleocr`, { headers: authHeaders() });
             const data = await res.json();
-            if (data.status === 'healthy') {
-                toast('API服务连接正常', 'success');
+            if (data.success) {
+                toast(`API 连接正常 (HTTP ${data.status_code})`, 'success');
             } else {
-                toast('API服务响应异常', 'warning');
+                toast(`API 连接失败: ${data.error}`, 'error');
+                console.error('PaddleOCR API test failed:', data.detail || data.error);
             }
         } catch (error) {
-            toast('API服务连接失败', 'error');
+            // 回退: 如果新端点不可用(旧版本后端),至少检查本地服务
+            console.warn('test-paddleocr endpoint unavailable, falling back to health check:', error);
+            try {
+                const res = await fetch(`${API_BASE}/api/health`);
+                const data = await res.json();
+                if (data.status === 'healthy') {
+                    toast('本地服务正常（无法测试 PaddleOCR API，请确认后端已更新）', 'warning');
+                } else {
+                    toast('API服务响应异常', 'warning');
+                }
+            } catch (e) {
+                toast('API服务连接失败', 'error');
+            }
         }
     }
 
@@ -1404,7 +1451,7 @@
                 toast('正在批量删除…', 'info');
                 const res = await fetch(`${API_BASE}/api/reports/batch-delete`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({ ids }),
                 });
                 if (!res.ok) {
@@ -1483,6 +1530,24 @@
         if (e.target.id === 'btn-refresh-reports') loadReports();
     });
 
+    // ============ 本地认证 token 获取 ============
+    // 从 /api/init 获取 X-Claw-Token（后端仅允许本机访问）。
+    async function fetchClawToken() {
+        try {
+            const res = await fetch(`${API_BASE}/api/init`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data && data.auth_required && data.token) {
+                    state.clawToken = data.token;
+                } else {
+                    state.clawToken = null;
+                }
+            }
+        } catch (err) {
+            // 服务器未就绪时静默失败，checkServerStatus 会重试
+        }
+    }
+
     // ============ 服务器状态检测 ============
     async function checkServerStatus() {
         try {
@@ -1492,6 +1557,8 @@
                 state.serverConnected = true;
                 dom.statusDot.className = 'status-dot connected';
                 dom.statusText.textContent = '服务正常';
+                // 服务器恢复健康后，若尚未取得 token 则补取（用于 CSRF 双重提交）
+                if (!state.clawToken) fetchClawToken();
             } else {
                 state.serverConnected = false;
                 dom.statusDot.className = 'status-dot disconnected';
@@ -1507,6 +1574,7 @@
     // ============ 初始化 ============
     function init() {
         initParticles();
+        fetchClawToken();
         checkServerStatus();
         setInterval(checkServerStatus, 30000);
 
