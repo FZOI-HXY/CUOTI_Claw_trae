@@ -226,7 +226,11 @@ class UploadWorker(_SelfPreservingThread):
                     upload_headers = _get_auth_headers("POST")
                     async with httpx.AsyncClient(timeout=120.0) as client:
                         with open(self.file_path, "rb") as f:
-                            files = {"file": (Path(self.file_path).name, f)}
+                            # 显式指定 content_type，防止 httpx 推断失败时
+                            # 默认发 application/octet-stream 导致后端拒绝 PDF
+                            import mimetypes
+                            ct = mimetypes.guess_type(self.file_path)[0] or "application/octet-stream"
+                            files = {"file": (Path(self.file_path).name, f, ct)}
                             resp = await client.post(
                                 f"{self.api_base}/api/upload",
                                 files=files,

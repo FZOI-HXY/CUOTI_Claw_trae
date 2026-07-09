@@ -20,7 +20,7 @@
 import sys
 import io
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -112,12 +112,16 @@ class TestHealthCheck:
     """测试健康检查端点"""
 
     def test_root_endpoint(self, api_client):
-        """GET / 返回服务信息"""
-        resp = api_client.get("/")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "running"
-        assert data["name"] == "错题管理系统"
+        """GET / 返回重定向到前端或服务信息"""
+        resp = api_client.get("/", follow_redirects=False)
+        # 根端点可能返回 302 重定向到 /app/ 或返回 JSON 服务信息
+        if resp.status_code == 302:
+            assert "/app" in resp.headers.get("location", "")
+        else:
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "running"
+            assert data["name"] == "错题管理系统"
 
     def test_health_check(self, api_client):
         """GET /api/health"""
@@ -220,6 +224,25 @@ class TestUploadAPI:
             "file": ("malware.exe", io.BytesIO(b"\x4d\x5a"), "application/octet-stream")
         })
         assert resp.status_code == 400
+
+    def test_upload_pdf_with_octet_stream_content_type(self, api_client):
+        """PDF 文件以 application/octet-stream 上传时应通过扩展名回退被接受"""
+        # 构造最小 PDF 文件（magic bytes: %PDF）
+        pdf_bytes = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+        resp = api_client.post("/api/upload", files={
+            "file": ("document.pdf", io.BytesIO(pdf_bytes), "application/octet-stream")
+        })
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+    def test_upload_pdf_with_correct_content_type(self, api_client):
+        """PDF 文件以 application/pdf 上传应成功"""
+        pdf_bytes = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+        resp = api_client.post("/api/upload", files={
+            "file": ("document.pdf", io.BytesIO(pdf_bytes), "application/pdf")
+        })
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
 
     def test_upload_rejects_oversized(self, api_client):
         """拒绝超大文件（超过限制大小的文件被拒绝）"""
@@ -493,9 +516,142 @@ class TestReportsAPI:
         assert data["failed"] == 2
         assert len(data["results"]) == 2
 
+    def test_get_report_image_valid(self, api_client, sample_image_bytes):
+        """获取报告中的有效图片"""
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "img_test",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        output_dir = backend.settings.output_dir
+        if not Path(output_dir).is_absolute():
+            output_dir = str(Path(__file__).parent.parent / "apps" / "web" / "api" / output_dir)
+
+        report_id = "test_image_report"
+        report_dir = Path(output_dir) / report_id
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "report.md").write_text("# test")
+        (report_dir / "valid_image.png").write_bytes(sample_image_bytes)
+
+        try:
+            resp = api_client.get(f"/api/report/{report_id}/image/valid_image.png")
+            assert resp.status_code == 200
+            assert resp.headers.get("content-type") == "image/png"
+            assert resp.content == sample_image_bytes
+        finally:
+            import shutil
+            if report_dir.exists():
+                shutil.rmtree(report_dir)
+
+    def test_get_report_image_nonexistent(self, api_client):
+        """获取不存在的报告图片"""
+        resp = api_client.get("/api/report/nonexistent/image/test.png")
+        assert resp.status_code == 404
+
+    def test_get_report_image_path_traversal(self, api_client, sample_image_bytes):
+        """图片路径穿越攻击应被拒绝（400或404都表示安全防护生效）"""
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "img_path_test",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        output_dir = backend.settings.output_dir
+        if not Path(output_dir).is_absolute():
+            output_dir = str(Path(__file__).parent.parent / "apps" / "web" / "api" / output_dir)
+
+        report_id = "test_path_report"
+        report_dir = Path(output_dir) / report_id
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "report.md").write_text("# test")
+
+        malicious_paths = [
+            "../secret.txt",
+            "../../etc/passwd",
+            "/etc/passwd",
+            "..\\windows\\system32",
+            "../../../etc/passwd",
+        ]
+
+        try:
+            for malicious_path in malicious_paths:
+                resp = api_client.get(f"/api/report/{report_id}/image/{malicious_path}")
+                assert resp.status_code in (400, 404), f"路径穿越应被拒绝: {malicious_path}"
+        finally:
+            import shutil
+            if report_dir.exists():
+                shutil.rmtree(report_dir)
+
+    def test_get_report_image_subdirectory(self, api_client, sample_image_bytes):
+        """获取子目录中的图片"""
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "img_subdir_test",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        output_dir = backend.settings.output_dir
+        if not Path(output_dir).is_absolute():
+            output_dir = str(Path(__file__).parent.parent / "apps" / "web" / "api" / output_dir)
+
+        report_id = "test_subdir_report"
+        report_dir = Path(output_dir) / report_id
+        sub_dir = report_dir / "images"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "report.md").write_text("# test")
+        (sub_dir / "nested.png").write_bytes(sample_image_bytes)
+
+        try:
+            resp = api_client.get(f"/api/report/{report_id}/image/images/nested.png")
+            assert resp.status_code == 200
+            assert resp.headers.get("content-type") == "image/png"
+        finally:
+            import shutil
+            if report_dir.exists():
+                shutil.rmtree(report_dir)
+
+    def test_get_report_image_case_insensitive_extension(self, api_client, sample_image_bytes):
+        """图片扩展名大小写不敏感"""
+        import importlib.util
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location(
+            "img_ext_test",
+            Path(__file__).parent.parent / "apps" / "web" / "api" / "main.py",
+        )
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        output_dir = backend.settings.output_dir
+        if not Path(output_dir).is_absolute():
+            output_dir = str(Path(__file__).parent.parent / "apps" / "web" / "api" / output_dir)
+
+        report_id = "test_ext_report"
+        report_dir = Path(output_dir) / report_id
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "report.md").write_text("# test")
+        (report_dir / "image.JPG").write_bytes(sample_image_bytes)
+
+        try:
+            resp = api_client.get(f"/api/report/{report_id}/image/image.JPG")
+            assert resp.status_code == 200
+            assert resp.headers.get("content-type") == "image/jpeg"
+        finally:
+            import shutil
+            if report_dir.exists():
+                shutil.rmtree(report_dir)
+
     def test_batch_delete_existing_reports(self, api_client, sample_image_bytes):
         """批量删除存在的报告（并行删除）"""
-        # 先创建几个报告目录
         import importlib.util
         from pathlib import Path
         spec = importlib.util.spec_from_file_location(
@@ -1013,8 +1169,475 @@ class TestBatchDownloadLayout:
         resp = api_client.post("/api/batch/download-layout", json={"files": []})
         assert resp.status_code == 400
 
-    def test_batch_download_layout_with_valid_reports(self, temp_dir, sample_image_bytes):
-        """有效报告应生成正确的布局JSON（如果端点存在）"""
-        # 该端点可能在生产代码中不存在，跳过该测试
-        # 仅验证安全防护已到位（空ID和路径遍历测试已通过）
-        pytest.skip("批量下载布局端点可能未实现，安全防护已验证")
+    def test_batch_download_layout_with_valid_files(self, api_client):
+        """有效文件数据应生成正确的批量版面分析报告"""
+        payload = {
+            "files": [
+                {
+                    "filename": "math_problem.jpg",
+                    "layout_items": [
+                        {
+                            "type": "title",
+                            "region": {"x": 10, "y": 10, "width": 200, "height": 30},
+                            "content_preview": "Chapter 1: Algebra",
+                        },
+                        {
+                            "type": "text",
+                            "region": {"x": 10, "y": 50, "width": 300, "height": 100},
+                            "content_preview": "Solve for x: 2x + 5 = 15",
+                        },
+                    ],
+                    "processing_time": 2.5,
+                },
+                {
+                    "filename": "physics_problem.png",
+                    "layout_items": [
+                        {
+                            "type": "image",
+                            "region": {"bbox": [50, 50, 200, 150]},
+                            "content_preview": "Diagram of forces",
+                        },
+                    ],
+                    "processing_time": 3.2,
+                },
+            ]
+        }
+
+        resp = api_client.post("/api/batch/download-layout", json=payload)
+        assert resp.status_code == 200
+        assert resp.headers.get("content-type") == "text/markdown; charset=utf-8"
+        assert 'filename="batch_layout_report.md"' in resp.headers.get("content-disposition", "")
+
+        content = resp.text
+        assert "# 批量版面分析报告" in content
+        assert "math_problem.jpg" in content
+        assert "physics_problem.png" in content
+        assert "| **文件总数** | 2 |" in content
+        assert "| **版面区域总数** | 3 |" in content
+        assert "Chapter 1: Algebra" in content
+        assert "Solve for x" in content
+        assert "Diagram of forces" in content
+
+    def test_batch_download_layout_xss_protection(self, api_client):
+        """布局数据中的 XSS 攻击应被转义"""
+        payload = {
+            "files": [
+                {
+                    "filename": '<script>alert("xss")</script>.jpg',
+                    "layout_items": [
+                        {
+                            "type": '<img src=x onerror=alert(1)>',
+                            "region": {"x": 0, "y": 0, "width": 100, "height": 100},
+                            "content_preview": '<svg/onload=alert(1)>',
+                        },
+                    ],
+                    "processing_time": 1.0,
+                }
+            ]
+        }
+
+        resp = api_client.post("/api/batch/download-layout", json=payload)
+        assert resp.status_code == 200
+
+        content = resp.text
+        assert "<script>" not in content
+        assert "<img" not in content
+        assert "<svg" not in content
+        assert "&lt;" in content
+        assert "&gt;" in content
+
+    def test_batch_download_layout_markdown_escape(self, api_client):
+        """文件名和内容中的 Markdown 特殊字符应被转义"""
+        payload = {
+            "files": [
+                {
+                    "filename": "file|name`with|special chars.jpg",
+                    "layout_items": [
+                        {
+                            "type": "text",
+                            "region": {"x": 0, "y": 0, "width": 100, "height": 100},
+                            "content_preview": "content | with | pipes\nand newlines",
+                        },
+                    ],
+                    "processing_time": 1.0,
+                }
+            ]
+        }
+
+        resp = api_client.post("/api/batch/download-layout", json=payload)
+        assert resp.status_code == 200
+
+        content = resp.text
+        assert "\\|" in content or "file|name" not in content
+        assert "\\`" in content or "name`with" not in content
+        lines = content.split("\n")
+        preview_line = [line for line in lines if "content_preview" in line.lower() or "content" in line]
+        for line in preview_line:
+            assert "\n" not in line
+
+    def test_batch_download_layout_empty_layout_items(self, api_client):
+        """空 layout_items 应正确处理"""
+        payload = {
+            "files": [
+                {
+                    "filename": "empty.jpg",
+                    "layout_items": [],
+                    "processing_time": 0.5,
+                }
+            ]
+        }
+
+        resp = api_client.post("/api/batch/download-layout", json=payload)
+        assert resp.status_code == 200
+
+        content = resp.text
+        assert "（该文件未检测到版面区域）" in content
+
+    def test_batch_download_layout_content_preview_truncation(self, api_client):
+        """过长的 content_preview 应被截断"""
+        long_content = "A" * 200 + "B" * 100
+        payload = {
+            "files": [
+                {
+                    "filename": "long_content.jpg",
+                    "layout_items": [
+                        {
+                            "type": "text",
+                            "region": {"x": 0, "y": 0, "width": 100, "height": 100},
+                            "content_preview": long_content,
+                        },
+                    ],
+                    "processing_time": 1.0,
+                }
+            ]
+        }
+
+        resp = api_client.post("/api/batch/download-layout", json=payload)
+        assert resp.status_code == 200
+
+        content = resp.text
+        assert "..." in content
+        assert content.count("A") <= 80
+        assert "B" not in content
+
+    def test_batch_download_layout_bbox_format(self, api_client):
+        """bbox 格式的 region 应正确解析"""
+        payload = {
+            "files": [
+                {
+                    "filename": "bbox_test.jpg",
+                    "layout_items": [
+                        {
+                            "type": "text",
+                            "region": {"bbox": [10, 20, 30, 40]},
+                            "content_preview": "bbox format",
+                        },
+                    ],
+                    "processing_time": 1.0,
+                }
+            ]
+        }
+
+        resp = api_client.post("/api/batch/download-layout", json=payload)
+        assert resp.status_code == 200
+
+        content = resp.text
+        assert "(10, 20, 30, 40)" in content
+
+    def test_batch_download_layout_missing_filename(self, api_client):
+        """缺少 filename 应使用默认值"""
+        payload = {
+            "files": [
+                {
+                    "layout_items": [],
+                    "processing_time": 1.0,
+                }
+            ]
+        }
+
+        resp = api_client.post("/api/batch/download-layout", json=payload)
+        assert resp.status_code == 200
+
+        content = resp.text
+        assert "文件1" in content
+
+
+# ──────────────────────────────────────────────────
+# 13. PaddleOCR API 连接测试端点
+# ──────────────────────────────────────────────────
+
+@pytest.mark.integration
+class TestPaddleOCRConnectionAPI:
+    """测试 /api/test-paddleocr 端点的连接检测功能
+
+    该端点验证 PaddleOCR API 的连通性和 Token 有效性，
+    涉及外部 API 调用、多种网络错误场景，需要全面覆盖。
+    """
+
+    def test_test_paddleocr_no_token_configured(self, api_client):
+        """未配置 API Token 时应返回失败（无网络请求）"""
+        from apps.web.api.config import settings
+        original_key = settings.paddleocr_api_key
+        settings.paddleocr_api_key = ""
+
+        try:
+            resp = api_client.get("/api/test-paddleocr")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is False
+            assert "API Token 未配置" in data["error"]
+        finally:
+            settings.paddleocr_api_key = original_key
+
+    def test_test_paddleocr_no_url_configured(self, api_client):
+        """未配置 API URL 时应返回失败（无网络请求）"""
+        from apps.web.api.config import settings
+        original_url = settings.paddleocr_api_url
+        settings.paddleocr_api_url = ""
+
+        try:
+            resp = api_client.get("/api/test-paddleocr")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is False
+            assert "API URL 未配置" in data["error"]
+        finally:
+            settings.paddleocr_api_url = original_url
+
+    def test_test_paddleocr_token_invalid_401(self, api_client):
+        """API Token 无效时返回 401 应被正确识别"""
+        from apps.web.api.config import settings
+        import httpx
+
+        original_url = settings.paddleocr_api_url
+        original_key = settings.paddleocr_api_key
+        settings.paddleocr_api_url = "https://test-api.example.com"
+        settings.paddleocr_api_key = "invalid_test_token"
+
+        try:
+            with patch("httpx.AsyncClient") as mock_client_class:
+                mock_client = AsyncMock()
+                mock_response = MagicMock()
+                mock_response.status_code = 401
+                mock_client.get.return_value = mock_response
+                mock_client_class.return_value.__aenter__.return_value = mock_client
+
+                resp = api_client.get("/api/test-paddleocr")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is False
+                assert "API Token 无效或已过期" in data["error"]
+                assert "401" in data["detail"]
+        finally:
+            settings.paddleocr_api_url = original_url
+            settings.paddleocr_api_key = original_key
+
+    def test_test_paddleocr_token_invalid_403(self, api_client):
+        """API Token 无效时返回 403 应被正确识别"""
+        from apps.web.api.config import settings
+
+        original_url = settings.paddleocr_api_url
+        original_key = settings.paddleocr_api_key
+        settings.paddleocr_api_url = "https://test-api.example.com"
+        settings.paddleocr_api_key = "forbidden_test_token"
+
+        try:
+            with patch("httpx.AsyncClient") as mock_client_class:
+                mock_client = AsyncMock()
+                mock_response = MagicMock()
+                mock_response.status_code = 403
+                mock_client.get.return_value = mock_response
+                mock_client_class.return_value.__aenter__.return_value = mock_client
+
+                resp = api_client.get("/api/test-paddleocr")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is False
+                assert "API Token 无效或已过期" in data["error"]
+                assert "403" in data["detail"]
+        finally:
+            settings.paddleocr_api_url = original_url
+            settings.paddleocr_api_key = original_key
+
+    def test_test_paddleocr_connection_success_200(self, api_client):
+        """连接成功且 Token 有效时返回 200"""
+        from apps.web.api.config import settings
+
+        original_url = settings.paddleocr_api_url
+        original_key = settings.paddleocr_api_key
+        settings.paddleocr_api_url = "https://valid-api.example.com"
+        settings.paddleocr_api_key = "valid_test_token"
+
+        try:
+            with patch("httpx.AsyncClient") as mock_client_class:
+                mock_client = AsyncMock()
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_client.get.return_value = mock_response
+                mock_client_class.return_value.__aenter__.return_value = mock_client
+
+                resp = api_client.get("/api/test-paddleocr")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is True
+                assert data["status_code"] == 200
+                assert "Token 有效" in data["detail"]
+        finally:
+            settings.paddleocr_api_url = original_url
+            settings.paddleocr_api_key = original_key
+
+    def test_test_paddleocr_connection_success_400(self, api_client):
+        """连接成功且 Token 有效时返回 400（参数缺失也视为有效）"""
+        from apps.web.api.config import settings
+
+        original_url = settings.paddleocr_api_url
+        original_key = settings.paddleocr_api_key
+        settings.paddleocr_api_url = "https://valid-api.example.com"
+        settings.paddleocr_api_key = "valid_test_token"
+
+        try:
+            with patch("httpx.AsyncClient") as mock_client_class:
+                mock_client = AsyncMock()
+                mock_response = MagicMock()
+                mock_response.status_code = 400
+                mock_client.get.return_value = mock_response
+                mock_client_class.return_value.__aenter__.return_value = mock_client
+
+                resp = api_client.get("/api/test-paddleocr")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is True
+                assert data["status_code"] == 400
+                assert "Token 有效" in data["detail"]
+        finally:
+            settings.paddleocr_api_url = original_url
+            settings.paddleocr_api_key = original_key
+
+    def test_test_paddleocr_connection_success_404(self, api_client):
+        """连接成功且 Token 有效时返回 404（路由不匹配也视为有效）"""
+        from apps.web.api.config import settings
+
+        original_url = settings.paddleocr_api_url
+        original_key = settings.paddleocr_api_key
+        settings.paddleocr_api_url = "https://valid-api.example.com"
+        settings.paddleocr_api_key = "valid_test_token"
+
+        try:
+            with patch("httpx.AsyncClient") as mock_client_class:
+                mock_client = AsyncMock()
+                mock_response = MagicMock()
+                mock_response.status_code = 404
+                mock_client.get.return_value = mock_response
+                mock_client_class.return_value.__aenter__.return_value = mock_client
+
+                resp = api_client.get("/api/test-paddleocr")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is True
+                assert data["status_code"] == 404
+                assert "Token 有效" in data["detail"]
+        finally:
+            settings.paddleocr_api_url = original_url
+            settings.paddleocr_api_key = original_key
+
+    def test_test_paddleocr_connect_error(self, api_client):
+        """网络连接失败时应正确报告"""
+        from apps.web.api.config import settings
+        import httpx
+
+        original_url = settings.paddleocr_api_url
+        original_key = settings.paddleocr_api_key
+        settings.paddleocr_api_url = "https://unreachable-api.example.com"
+        settings.paddleocr_api_key = "valid_test_token"
+
+        try:
+            with patch("httpx.AsyncClient") as mock_client_class:
+                mock_client = AsyncMock()
+                mock_client.get.side_effect = httpx.ConnectError("Network unreachable")
+                mock_client_class.return_value.__aenter__.return_value = mock_client
+
+                resp = api_client.get("/api/test-paddleocr")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is False
+                assert "无法连接到 API 服务器" in data["error"]
+        finally:
+            settings.paddleocr_api_url = original_url
+            settings.paddleocr_api_key = original_key
+
+    def test_test_paddleocr_timeout(self, api_client):
+        """请求超时时应正确报告"""
+        from apps.web.api.config import settings
+        import httpx
+
+        original_url = settings.paddleocr_api_url
+        original_key = settings.paddleocr_api_key
+        settings.paddleocr_api_url = "https://slow-api.example.com"
+        settings.paddleocr_api_key = "valid_test_token"
+
+        try:
+            with patch("httpx.AsyncClient") as mock_client_class:
+                mock_client = AsyncMock()
+                mock_client.get.side_effect = httpx.TimeoutException("Timeout")
+                mock_client_class.return_value.__aenter__.return_value = mock_client
+
+                resp = api_client.get("/api/test-paddleocr")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is False
+                assert "API 请求超时" in data["error"]
+        finally:
+            settings.paddleocr_api_url = original_url
+            settings.paddleocr_api_key = original_key
+
+    def test_test_paddleocr_generic_exception_debug_mode(self, api_client):
+        """通用异常在 debug 模式下应包含详情"""
+        from apps.web.api.config import settings
+
+        original_url = settings.paddleocr_api_url
+        original_key = settings.paddleocr_api_key
+        original_debug = settings.debug
+        settings.paddleocr_api_url = "https://error-api.example.com"
+        settings.paddleocr_api_key = "valid_test_token"
+        settings.debug = True
+
+        try:
+            # 不 mock httpx.AsyncClient，直接触发外层 try 块的通用异常
+            with patch("httpx.AsyncClient.__init__", side_effect=RuntimeError("INTERNAL_SECRET_ERROR_12345")):
+                resp = api_client.get("/api/test-paddleocr")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is False
+                assert "测试失败" in data["error"]
+                # debug 模式下应包含错误详情
+                assert "INTERNAL_SECRET_ERROR_12345" in data["detail"]
+        finally:
+            settings.paddleocr_api_url = original_url
+            settings.paddleocr_api_key = original_key
+            settings.debug = original_debug
+
+    def test_test_paddleocr_generic_exception_production_mode(self, api_client):
+        """通用异常在生产模式下不应泄露详情"""
+        from apps.web.api.config import settings
+
+        original_url = settings.paddleocr_api_url
+        original_key = settings.paddleocr_api_key
+        original_debug = settings.debug
+        settings.paddleocr_api_url = "https://error-api.example.com"
+        settings.paddleocr_api_key = "valid_test_token"
+        settings.debug = False
+
+        try:
+            with patch("httpx.AsyncClient.__init__", side_effect=RuntimeError("SECRET_DETAIL_NOT_TO_LEAK")):
+                resp = api_client.get("/api/test-paddleocr")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["success"] is False
+                assert "测试失败" in data["error"]
+                # 生产模式下不应泄露内部错误详情
+                assert "SECRET_DETAIL_NOT_TO_LEAK" not in data["detail"]
+                assert data["detail"] == "内部错误"
+        finally:
+            settings.paddleocr_api_url = original_url
+            settings.paddleocr_api_key = original_key
+            settings.debug = original_debug

@@ -765,11 +765,16 @@ async def batch_delete_history(request: BatchDeleteRequest):
 async def upload_image(file: UploadFile = File(...)):
     """上传图片或 PDF 文件"""
     allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp", "image/tiff", "application/pdf"}
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif", ".pdf"}
     if file.content_type and file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的文件类型: {file.content_type}。支持: JPEG, PNG, BMP, WebP, TIFF, PDF",
-        )
+        # 扩展名回退：某些客户端（如桌面端 httpx）可能发送 application/octet-stream，
+        # 此时根据文件扩展名判断是否允许上传
+        ext = _extract_safe_extension(file.filename).lower()
+        if ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的文件类型: {file.content_type}。支持: JPEG, PNG, BMP, WebP, TIFF, PDF",
+            )
 
     file.file.seek(0, 2)
     file_size = file.file.tell()
@@ -1367,6 +1372,7 @@ async def upload_images_batch(files: List[UploadFile] = File(...)):
         )
 
     allowed_types = {"image/jpeg", "image/png", "image/bmp", "image/webp", "image/tiff", "application/pdf"}
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif", ".pdf"}
     max_size = settings.max_upload_size_mb * 1024 * 1024
     upload_path = settings.get_upload_path()
 
@@ -1378,11 +1384,14 @@ async def upload_images_batch(files: List[UploadFile] = File(...)):
             original_name = file.filename or "unknown"
             try:
                 if file.content_type and file.content_type not in allowed_types:
-                    return {
-                        "original_name": original_name,
-                        "success": False,
-                        "error": f"不支持的文件类型: {file.content_type}",
-                    }
+                    # 扩展名回退：某些客户端（如桌面端 httpx）可能发送 application/octet-stream
+                    ext = _extract_safe_extension(original_name).lower()
+                    if ext not in allowed_extensions:
+                        return {
+                            "original_name": original_name,
+                            "success": False,
+                            "error": f"不支持的文件类型: {file.content_type}",
+                        }
 
                 # 安全修复：先用 seek/tell 取文件大小，避免把超大文件整读进内存
                 # 与单文件端点 upload_image 保持一致
