@@ -1,5 +1,5 @@
 # ======================================================
-# Claw 错题管理系统 - .gitignore
+# DocFlow — AI智能文档识别与管理系统 - .gitignore
 # ======================================================
 
 # ── Python ──
@@ -16,14 +16,24 @@ build/
 eggs/
 .eggs/
 *.manifest
-*.spec
 
 # ── Virtual Environment ──
 venv/
-.env
 .venv
 env/
 ENV/
+
+# ── 环境配置（含密钥）──
+.env
+*.env.local
+*.env.production
+apps/web/api/.env
+apps/desktop/nas_config.json
+
+# ── Cloudflare Tunnel 凭证（敏感文件，切勿提交）──
+deploy/cloudflared/cert.pem
+deploy/cloudflared/*.json
+C:\Users\IDC\.cloudflared/
 
 # ── IDE / Editor ──
 .vscode/
@@ -39,41 +49,42 @@ apps/desktop/dist/
 apps/desktop/build/
 apps/desktop/*.spec
 apps/desktop/app_icon.ico
+apps/desktop/local_cache/
 
-# ── 测试报告 ──
-reports/
+# ── 测试 ──
+.pytest_cache/
 htmlcov/
 .coverage
 .coverage.*
 *.cover
-.pytest_cache/
+reports/
+*_result.txt
+*_result2.txt
+test_output.txt
+markdown_test_result.txt
 
-# ── 日志文件 ──
-logs/*.log
-apps/web/api/logs/*.log
-apps/desktop/local_cache/
-
-# ── 上传/输出目录（运行时生成） ──
+# ── 运行时数据目录（统一在 data/ 下）──
 data/uploads/*
 data/output/*
 data/logs/*
 !data/uploads/.gitkeep
 !data/output/.gitkeep
 !data/logs/.gitkeep
+# 兼容历史路径（防止重新生成）
+uploads/*
+output/*
+logs/*
+!uploads/.gitkeep
+!output/.gitkeep
+!logs/.gitkeep
 apps/web/api/uploads/*
 apps/web/api/output/*
-!apps/web/api/uploads/.gitkeep
-!apps/web/api/output/.gitkeep
-uploads/*
-!uploads/.gitkeep
+apps/web/api/logs/*
+apps/desktop/output/*
+apps/desktop/logs/*
 
-# ── NAS 配置（含密码） ──
-apps/desktop/nas_config.json
-
-# ── 环境配置（含密钥） ──
-apps/web/api/.env
-*.env.local
-*.env.production
+# ── 日志文件 ──
+*.log
 
 # ── 临时文件 ──
 *.tmp
@@ -83,15 +94,18 @@ apps/web/api/.env
 tmp/
 temp/
 ~$*
+# 临时 diff/快照文件
+tmp_*.txt
+old_*.py
+*_diff.txt
+commit_diff.txt
+
+# ── TRAE 临时目录 ──
+.trae-html-share-packages/
 
 # ── 操作系统 ──
 Desktop.ini
 $RECYCLE.BIN/
-
-# ── 测试输出文件 ──
-markdown_test_result.txt
-test_output.txt
-*_result.txt
 
 # ── 其他 ──
 *.wpr

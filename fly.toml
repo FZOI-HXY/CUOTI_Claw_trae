@@ -1,0 +1,74 @@
+# ======================================================
+# Claw 错题管理系统 - Fly.io 配置
+# ======================================================
+#
+# Fly.io 免费层：
+#   - 3 台 shared-cpu-1x (256MB) 机器，永久免费
+#   - 3GB 持久化卷存储（免费）
+#   - 不限运行时间（不休眠）
+#
+# 部署方法见 deploy-fly.sh 或 docs/DEPLOY.md
+# ======================================================
+
+# 应用名称（部署时由 fly launch 自动生成或手动指定）
+# 修改为你的应用名，需全局唯一
+app = "claw-ocr"
+primary_region = "nrt"  # 东京节点，亚洲访问快；可选: sin(新加坡), hkg(无), lax(洛杉矶)
+
+# ---------- 构建配置 ----------
+[build]
+  # 使用项目根目录的 Dockerfile
+  dockerfile = "Dockerfile.fly"
+
+# ---------- 主服务机器 ----------
+[http_service]
+  internal_port = 8500
+  force_https = true
+  auto_stop_machines = false  # 关闭自动停止，保持 7x24 在线
+  auto_start_machines = true
+  min_machines_running = 1    # 至少保持 1 台运行
+
+  # 健康检查
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 25
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "15s"
+    method = "GET"
+    path = "/api/health"
+
+# ---------- 机器配置 ----------
+# shared-cpu-1x + 256MB = 免费层（$0/月）
+# 如需更多内存，改为 512MB（约 $3.32/月）
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# ---------- 持久化卷 ----------
+# 挂载到 /app/data，存放上传文件、报告、SQLite 数据库、日志
+# 卷大小：1GB（免费额度内）
+[mounts]
+  source = "claw_data"
+  destination = "/app/data"
+
+# ---------- 环境变量 ----------
+# 非敏感配置写在这里；敏感配置用 fly secrets set
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8500"
+  DEBUG = "false"
+  LOG_LEVEL = "INFO"
+  TZ = "Asia/Shanghai"
+  CLAW_DATA_DIR = "/app/data"
+  PADDLEOCR_MODEL = "PaddleOCR-VL-1.6"
+  MAX_UPLOAD_SIZE_MB = "50"
+
+# 敏感配置（通过 fly secrets set 设置）：
+#   fly secrets set PADDLEOCR_API_KEY=your_token_here
+#   fly secrets set PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs

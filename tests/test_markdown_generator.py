@@ -56,7 +56,7 @@ class TestBuildReport:
             processing_time=5.0,
         )
         assert isinstance(result, str)
-        assert "# 错题分析报告" in result
+        assert "# 文档分析报告" in result
         assert "math_problem.jpg" in result
 
     def test_build_report_contains_metadata(self, temp_dir):
@@ -324,6 +324,31 @@ class TestImagePathReplacement:
 
         assert 'src="imgs/chart_0.png"' in result
 
+    def test_replace_image_ref_with_imgs_prefix(self):
+        """images dict 的 key 包含 imgs/ 前缀时，markdown 引用应被正确替换"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        mg = MarkdownGenerator(output_dir=Path("/tmp"))
+        images = {"imgs/img_in_footer_image_box_644_1161_686_1203.jpg": "data:image/png;base64,test"}
+
+        md = "![](imgs/img_in_footer_image_box_644_1161_686_1203.jpg)"
+        result = mg._replace_image_refs(md, images)
+
+        assert "imgs/img_in_footer_image_box_644_1161_686_1203.jpg" in result
+        assert "imgs/imgs_img_in_footer" not in result
+
+    def test_replace_image_ref_with_img_prefix(self):
+        """markdown 引用包含 img/ 前缀（无 s）时也应被正确替换"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        mg = MarkdownGenerator(output_dir=Path("/tmp"))
+        images = {"img_in_footer_image_box_644_1161_686_1203.jpg": "data:image/png;base64,test"}
+
+        md = "![](img/img_in_footer_image_box_644_1161_686_1203.jpg)"
+        result = mg._replace_image_refs(md, images)
+
+        assert "imgs/img_in_footer_image_box_644_1161_686_1203.jpg" in result
+
 
 @pytest.mark.unit
 class TestSafeImageName:
@@ -349,13 +374,29 @@ class TestSafeImageName:
         assert result.endswith(".png")
 
     def test_safe_image_name_with_path_separator(self):
-        """路径分隔符应被替换"""
+        """路径分隔符应被替换（保留子目录结构）"""
         from apps.web.api.markdown_generator import MarkdownGenerator
 
-        result = MarkdownGenerator._safe_image_name("imgs/subdir/image.jpg")
+        result = MarkdownGenerator._safe_image_name("subdir/image.jpg")
         assert "/" not in result
         assert "\\" not in result
         assert result.endswith(".jpg")
+
+    def test_safe_image_name_strips_imgs_prefix(self):
+        """imgs/ 前缀应被剥离，避免 imgs_img_xxx 冗余文件名"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        result = MarkdownGenerator._safe_image_name("imgs/img_in_footer_image_box_644_1161_686_1203.jpg")
+        assert not result.startswith("imgs_")
+        assert result == "img_in_footer_image_box_644_1161_686_1203.jpg"
+
+    def test_safe_image_name_strips_img_prefix(self):
+        """img/ 前缀应被剥离"""
+        from apps.web.api.markdown_generator import MarkdownGenerator
+
+        result = MarkdownGenerator._safe_image_name("img/chart_0.jpg")
+        assert not result.startswith("img_")
+        assert result == "chart_0.jpg"
 
 
 @pytest.mark.unit
@@ -424,3 +465,144 @@ class TestEscapeMdTableCell:
             processing_time=1.0,
         )
         assert assertion_func(result), f"断言失败，result 片段: {result[:200]}"
+
+
+@pytest.mark.unit
+class TestValidateImageUrl:
+    """测试 _validate_image_url 的 SSRF 防护"""
+
+    def test_validate_image_url_accepts_valid_https(self):
+        """应接受有效的 https URL"""
+        from apps.web.api.markdown_generator import _validate_image_url
+
+        _validate_image_url("https://example.com/image.png")
+        _validate_image_url("https://cdn.example.com/path/to/image.jpg")
+
+    def test_validate_image_url_accepts_valid_http(self):
+        """应接受有效的 http URL"""
+        from apps.web.api.markdown_generator import _validate_image_url
+
+        _validate_image_url("http://example.com/image.png")
+
+    def test_validate_image_url_rejects_localhost(self):
+        """应拒绝 localhost URL"""
+        from apps.web.api.markdown_generator import _validate_image_url
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_image_url("https://localhost/image.png")
+        assert "localhost" in str(exc_info.value)
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_image_url("http://localhost:8080/image.png")
+        assert "localhost" in str(exc_info.value)
+
+    def test_validate_image_url_rejects_internal_ip(self):
+        """应拒绝内网 IP"""
+        from apps.web.api.markdown_generator import _validate_image_url
+
+        internal_ips = [
+            "https://127.0.0.1/image.png",
+            "https://192.168.1.1/image.png",
+            "https://10.0.0.1/image.png",
+            "https://172.16.0.1/image.png",
+            "https://0.0.0.0/image.png",
+            "https://[::1]/image.png",
+        ]
+
+        for url in internal_ips:
+            with pytest.raises(ValueError) as exc_info:
+                _validate_image_url(url)
+            assert "内网" in str(exc_info.value) or "localhost" in str(exc_info.value), f"应拒绝: {url}"
+
+    def test_validate_image_url_rejects_domain_resolving_to_internal(self):
+        """应拒绝解析到内网 IP 的域名（防 DNS 重绑定）"""
+        from apps.web.api.markdown_generator import _validate_image_url
+        from unittest.mock import patch
+        import socket
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = [
+                [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.168.1.100", 0))],
+                socket.gaierror,
+            ]
+            with pytest.raises(ValueError) as exc_info:
+                _validate_image_url("https://evil-ssrf.example.com/image.png")
+            assert "内网" in str(exc_info.value)
+
+    def test_validate_image_url_rejects_invalid_protocol(self):
+        """应拒绝无效协议"""
+        from apps.web.api.markdown_generator import _validate_image_url
+
+        invalid_protocols = [
+            "ftp://example.com/image.png",
+            "file:///etc/passwd",
+            "data:image/png;base64,test",
+            "//example.com/image.png",
+            "example.com/image.png",
+        ]
+
+        for url in invalid_protocols:
+            with pytest.raises(ValueError) as exc_info:
+                _validate_image_url(url)
+            assert "协议" in str(exc_info.value), f"应拒绝: {url}"
+
+    def test_validate_image_url_rejects_empty_host(self):
+        """应拒绝空主机名"""
+        from apps.web.api.markdown_generator import _validate_image_url
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_image_url("https:///image.png")
+        assert "主机名" in str(exc_info.value)
+
+    def test_validate_image_url_rejects_invalid_url(self):
+        """应拒绝无法解析的 URL"""
+        from apps.web.api.markdown_generator import _validate_image_url
+
+        with pytest.raises(ValueError):
+            _validate_image_url("https://[invalid-url/image.png")
+
+    def test_validate_image_url_rejects_ipv6_local(self):
+        """应拒绝 IPv6 本地地址"""
+        from apps.web.api.markdown_generator import _validate_image_url
+
+        local_ipv6_urls = [
+            "https://[::1]/image.png",
+            "https://[fc00::1]/image.png",
+            "https://[fe80::1]/image.png",
+        ]
+
+        for url in local_ipv6_urls:
+            with pytest.raises(ValueError) as exc_info:
+                _validate_image_url(url)
+            assert "内网" in str(exc_info.value) or "localhost" in str(exc_info.value), f"应拒绝: {url}"
+
+    def test_validate_image_url_accepts_ipv6_public(self):
+        """应接受 IPv6 公网地址"""
+        from apps.web.api.markdown_generator import _validate_image_url
+
+        _validate_image_url("https://[2606:2800:220:1:248:1893:25c8:1946]/image.png")
+
+    def test_validate_image_url_dns_resolution_failure(self):
+        """DNS 解析失败时，_is_internal_ip 返回 False，URL 校验通过"""
+        from apps.web.api.markdown_generator import _validate_image_url
+        from unittest.mock import patch
+        import socket
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = socket.gaierror
+            _validate_image_url("https://non-existent-domain-xyz123.com/image.png")
+
+    def test_validate_image_url_rejects_domain_resolving_to_ipv6_local(self):
+        """应拒绝解析到 IPv6 本地地址的域名"""
+        from apps.web.api.markdown_generator import _validate_image_url
+        from unittest.mock import patch
+        import socket
+
+        with patch("socket.getaddrinfo") as mock_getaddrinfo:
+            mock_getaddrinfo.side_effect = [
+                socket.gaierror,
+                [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("fc00::1", 0, 0, 0))],
+            ]
+            with pytest.raises(ValueError) as exc_info:
+                _validate_image_url("https://evil-ipv6-local.example.com/image.png")
+            assert "内网" in str(exc_info.value)

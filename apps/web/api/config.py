@@ -1,5 +1,5 @@
 """
-错题管理系统 - 配置模块
+DocFlow — 配置模块
 """
 import os
 import sys

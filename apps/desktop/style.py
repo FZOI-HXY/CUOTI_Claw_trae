@@ -1,5 +1,5 @@
 """
-错题管理系统 - 全局样式表（暗色主题）
+DocFlow — 全局样式表（暗色主题）
 """
 DARK_STYLE = """
 QMainWindow {

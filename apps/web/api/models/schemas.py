@@ -1,5 +1,5 @@
 """
-错题管理系统 - Pydantic 请求/响应数据模型
+DocFlow — Pydantic 请求/响应数据模型
 
 定义所有 API 端点的输入输出结构，供 FastAPI 自动文档和验证使用。
 """

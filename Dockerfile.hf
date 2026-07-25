@@ -1,0 +1,81 @@
+# ======================================================
+# DocFlow — AI智能文档识别与管理系统
+# Hugging Face Spaces Docker 部署文件
+# ======================================================
+#
+# HF Spaces 免费配置：
+#   - 2 vCPU / 16GB RAM / 50GB 磁盘
+#   - 永久免费，无需信用卡，仅需邮箱注册
+#   - Docker 容器运行，端口 7860
+#   - 访问地址：https://huggingface.co/spaces/<username>/<space-name>
+# ======================================================
+
+FROM python:3.13-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /build
+
+COPY apps/web/api/requirements.txt ./requirements.txt
+
+RUN pip install --upgrade pip --no-cache-dir && \
+    pip install --prefix=/install --no-cache-dir -r requirements.txt
+
+FROM python:3.13-slim AS runtime
+
+LABEL maintainer="DocFlow Team" \
+      description="DocFlow - AI智能文档识别与管理系统 (Hugging Face Spaces)" \
+      version="1.2.0"
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Shanghai \
+    HOST=0.0.0.0 \
+    PORT=7860 \
+    DEBUG=false \
+    LOG_LEVEL=INFO \
+    RATE_LIMIT_REQUESTS=300
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        tzdata && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+COPY --from=builder /install /usr/local
+
+# HF Spaces 要求容器以 UID 1000 运行，必须在 COPY 之前创建用户
+RUN groupadd --gid 1000 docflow && \
+    useradd -m -u 1000 -g docflow -d /home/docflow docflow
+
+ENV HOME=/home/docflow \
+    PATH=/home/docflow/.local/bin:$PATH
+
+WORKDIR /app
+
+COPY --chown=docflow:docflow . /app
+
+RUN mkdir -p /app/data/uploads /app/data/output /app/data/logs && \
+    chown -R docflow:docflow /app/data
+
+USER docflow
+
+# HF Spaces 要求端口 7860
+EXPOSE 7860
+
+# HF Spaces 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fs http://127.0.0.1:7860/api/health || exit 1
+
+ENV CLAW_DATA_DIR=/app/data
+
+# HF Spaces 必须监听 0.0.0.0:7860
+CMD ["python", "-m", "uvicorn", "apps.web.api.main:app", \
+     "--host", "0.0.0.0", "--port", "7860", \
+     "--workers", "1", "--log-level", "info"]

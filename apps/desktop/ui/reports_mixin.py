@@ -114,75 +114,77 @@ class ReportsTabMixin:
         size_tasks: Dict[int, str] = {}
 
         self.reports_table.blockSignals(True)
-        self.reports_table.setRowCount(len(reports))
-        for i, r in enumerate(reports):
-            rid = r.get('id', '')
-            self._all_report_ids.append(rid)
+        try:
+            self.reports_table.setRowCount(len(reports))
+            for i, r in enumerate(reports):
+                rid = r.get('id', '')
+                self._all_report_ids.append(rid)
 
-            # 列 0: 选择 checkbox（QTableWidgetItem + CheckState，可靠于 cellWidget QCheckBox）
-            cb_item = QTableWidgetItem()
-            cb_item.setFlags(cb_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            cb_item.setCheckState(Qt.CheckState.Unchecked)
-            cb_item.setData(Qt.ItemDataRole.UserRole, rid)
-            self.reports_table.setItem(i, 0, cb_item)
+                # 列 0: 选择 checkbox（QTableWidgetItem + CheckState，可靠于 cellWidget QCheckBox）
+                cb_item = QTableWidgetItem()
+                cb_item.setFlags(cb_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                cb_item.setCheckState(Qt.CheckState.Unchecked)
+                cb_item.setData(Qt.ItemDataRole.UserRole, rid)
+                self.reports_table.setItem(i, 0, cb_item)
 
-            # 列 1-4: 数据列
-            self.reports_table.setItem(i, 1, QTableWidgetItem(str(rid)))
-            created = r.get('created_time', '')
-            self.reports_table.setItem(i, 2, QTableWidgetItem(
-                str(created)[:19] if created else ''))
-            has_md = "是" if r.get('has_markdown') else "否"
-            md_item = QTableWidgetItem(has_md)
-            md_item.setForeground(QColor("#10b981") if r.get('has_markdown') else QColor("#8b95a8"))
-            self.reports_table.setItem(i, 3, md_item)
+                # 列 1-4: 数据列
+                self.reports_table.setItem(i, 1, QTableWidgetItem(str(rid)))
+                created = r.get('created_time', '')
+                self.reports_table.setItem(i, 2, QTableWidgetItem(
+                    str(created)[:19] if created else ''))
+                has_md = "是" if r.get('has_markdown') else "否"
+                md_item = QTableWidgetItem(has_md)
+                md_item.setForeground(QColor("#10b981") if r.get('has_markdown') else QColor("#8b95a8"))
+                self.reports_table.setItem(i, 3, md_item)
 
-            report_path = r.get('path', '')
-            # 大小计算延后到后台线程，避免主线程 rglob+stat 阻塞 UI
-            size_str = "-"
-            self.reports_table.setItem(i, 4, QTableWidgetItem(size_str))
-            if report_path:
-                size_tasks[i] = report_path
+                report_path = r.get('path', '')
+                # 大小计算延后到后台线程，避免主线程 rglob+stat 阻塞 UI
+                size_str = "-"
+                self.reports_table.setItem(i, 4, QTableWidgetItem(size_str))
+                if report_path:
+                    size_tasks[i] = report_path
 
-            # 列 5: 操作按钮
-            btn_widget = QWidget()
-            btn_layout = QHBoxLayout(btn_widget)
-            btn_layout.setContentsMargins(6, 4, 6, 4)
-            btn_layout.setSpacing(8)
+                # 列 5: 操作按钮
+                btn_widget = QWidget()
+                btn_layout = QHBoxLayout(btn_widget)
+                btn_layout.setContentsMargins(6, 4, 6, 4)
+                btn_layout.setSpacing(8)
 
-            view_btn = QPushButton("查看")
-            view_btn.setMinimumWidth(60)
-            view_btn.setStyleSheet(
-                "QPushButton { background: rgba(59,130,246,0.12); color: #60a5fa; border: 1px solid #3b82f6; "
-                "border-radius: 4px; padding: 4px 10px; font-size: 13px; font-weight: 500; }"
-                "QPushButton:hover { background: rgba(59,130,246,0.25); }"
-            )
-            view_btn.clicked.connect(lambda checked, x=rid: self.view_report_content(x))
-            btn_layout.addWidget(view_btn)
+                view_btn = QPushButton("查看")
+                view_btn.setMinimumWidth(60)
+                view_btn.setStyleSheet(
+                    "QPushButton { background: rgba(59,130,246,0.12); color: #60a5fa; border: 1px solid #3b82f6; "
+                    "border-radius: 4px; padding: 4px 10px; font-size: 13px; font-weight: 500; }"
+                    "QPushButton:hover { background: rgba(59,130,246,0.25); }"
+                )
+                view_btn.clicked.connect(lambda checked, x=rid: self.view_report_content(x))
+                btn_layout.addWidget(view_btn)
 
-            dl_btn = QPushButton("下载")
-            dl_btn.setMinimumWidth(60)
-            dl_btn.setStyleSheet(
-                "QPushButton { background: rgba(6,182,212,0.12); color: #22d3ee; border: 1px solid #06b6d4; "
-                "border-radius: 4px; padding: 4px 10px; font-size: 13px; font-weight: 500; }"
-                "QPushButton:hover { background: rgba(6,182,212,0.25); }"
-            )
-            dl_btn.clicked.connect(lambda checked, x=rid: self.download_report(x))
-            btn_layout.addWidget(dl_btn)
+                dl_btn = QPushButton("下载")
+                dl_btn.setMinimumWidth(60)
+                dl_btn.setStyleSheet(
+                    "QPushButton { background: rgba(6,182,212,0.12); color: #22d3ee; border: 1px solid #06b6d4; "
+                    "border-radius: 4px; padding: 4px 10px; font-size: 13px; font-weight: 500; }"
+                    "QPushButton:hover { background: rgba(6,182,212,0.25); }"
+                )
+                dl_btn.clicked.connect(lambda checked, x=rid: self.download_report(x))
+                btn_layout.addWidget(dl_btn)
 
-            del_btn = QPushButton("删除")
-            del_btn.setMinimumWidth(60)
-            del_btn.setStyleSheet(
-                "QPushButton { background: rgba(239,68,68,0.12); color: #f87171; border: 1px solid #ef4444; "
-                "border-radius: 4px; padding: 4px 10px; font-size: 13px; font-weight: 500; }"
-                "QPushButton:hover { background: rgba(239,68,68,0.25); }"
-            )
-            del_btn.clicked.connect(lambda checked, x=rid: self.delete_report(x))
-            btn_layout.addWidget(del_btn)
+                del_btn = QPushButton("删除")
+                del_btn.setMinimumWidth(60)
+                del_btn.setStyleSheet(
+                    "QPushButton { background: rgba(239,68,68,0.12); color: #f87171; border: 1px solid #ef4444; "
+                    "border-radius: 4px; padding: 4px 10px; font-size: 13px; font-weight: 500; }"
+                    "QPushButton:hover { background: rgba(239,68,68,0.25); }"
+                )
+                del_btn.clicked.connect(lambda checked, x=rid: self.delete_report(x))
+                btn_layout.addWidget(del_btn)
 
-            self.reports_table.setCellWidget(i, 5, btn_widget)
-            self.reports_table.setRowHeight(i, 75)
-
-        self.reports_table.blockSignals(False)
+                self.reports_table.setCellWidget(i, 5, btn_widget)
+                self.reports_table.setRowHeight(i, 75)
+        finally:
+            # 确保异常时也恢复信号，避免表格永久失响
+            self.reports_table.blockSignals(False)
 
         # 重置全选状态并刷新按钮
         self.report_select_all_cb.blockSignals(True)

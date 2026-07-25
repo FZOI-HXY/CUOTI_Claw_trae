@@ -135,7 +135,7 @@ async def _http_request(method: str, url: str, json_data=None, files_data=None,
     if _HAS_HTTPX:
         async with httpx.AsyncClient(timeout=timeout) as client:
             if method == "GET":
-                resp = await client.get(url)
+                resp = await client.get(url, headers=auth_headers)
             elif method == "POST":
                 if files_data:
                     resp = await client.post(url, files=files_data, headers=auth_headers)

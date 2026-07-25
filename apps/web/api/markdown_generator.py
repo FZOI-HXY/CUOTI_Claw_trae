@@ -1,5 +1,5 @@
 """
-错题管理系统 - Markdown文档生成器
+DocFlow — Markdown文档生成器
 支持 PaddleOCR-VL-1.6 / PP-StructureV3 返回的结构化 Markdown，提取内嵌图片并保存。
 适配多模型输出格式（VL 系列的 layoutParsingResults 和 OCR 系列的 ocrResults）。
 """
@@ -8,9 +8,12 @@ import re
 import json
 import asyncio
 import uuid
+import socket
+import ipaddress
 import sys as _sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Dict, Any, List, Optional
 from apps.web.api.logger import setup_logger
 
@@ -34,6 +37,59 @@ if _httpx_load_error and getattr(_sys, 'frozen', False):
     logger.warning(
         f"httpx 导入失败，图片 URL 下载功能将降级：{_httpx_load_error}"
     )
+
+
+# ---------------------------------------------------------------------------
+# SSRF 防护：校验图片 URL，防止下载内网资源
+# 与 paddle_service.py 中 _validate_result_url 逻辑一致
+# ---------------------------------------------------------------------------
+
+def _is_internal_ip(host: str) -> bool:
+    """判断主机名是否为内网地址或 localhost"""
+    if not host:
+        return True
+    if host in ("localhost",):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        pass
+    try:
+        ips = socket.getaddrinfo(host, None, socket.AF_INET)
+        for _, _, _, _, (ip_addr, _) in ips:
+            ip = ipaddress.ip_address(ip_addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return True
+    except (socket.gaierror, ValueError):
+        pass
+    try:
+        ips = socket.getaddrinfo(host, None, socket.AF_INET6)
+        for _, _, _, _, (ip_addr, _, _, _) in ips:
+            ip = ipaddress.ip_address(ip_addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return True
+    except (socket.gaierror, ValueError):
+        pass
+    return False
+
+
+def _validate_image_url(url: str) -> None:
+    """校验图片 URL，防止 SSRF 攻击
+
+    拒绝指向 localhost 和内网 IP 的 URL（含解析后指向内网的域名）。
+    """
+    if not (url.startswith("https://") or url.startswith("http://")):
+        raise ValueError(f"图片 URL 必须使用 http(s) 协议: {url[:80]}...")
+    try:
+        parsed = urlparse(url)
+    except Exception as e:
+        raise ValueError(f"图片 URL 解析失败: {e}")
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError(f"图片 URL 主机名无效: {url[:80]}...")
+    if _is_internal_ip(host):
+        raise ValueError(f"图片 URL 不允许指向内网地址或 localhost: {url[:80]}...")
 
 
 class MarkdownGenerator:
@@ -60,6 +116,27 @@ class MarkdownGenerator:
         result = result.replace("<", "&lt;")
         result = result.replace(">", "&gt;")
         return result
+
+    @staticmethod
+    def _escape_md_table_cell(text: str) -> str:
+        """B4: 转义 Markdown 表格单元格中的特殊字符，防止 XSS 和格式破坏
+
+        与文件名转义不同，表格单元格中:
+          - | → \\|   （防止破坏表格列分隔）
+          - 换行 → 空格（防止破坏表格行）
+          - < → &lt;  （防止注入 HTML 标签）
+          - > → &gt;  （防止注入 HTML 标签）
+          - ` → &#96; （防止注入行内代码 / 代码块，使用 HTML 实体更可靠）
+        """
+        if not text:
+            return ""
+        text = str(text)
+        text = text.replace("|", "\\|")
+        text = text.replace("\n", " ")
+        text = text.replace("<", "&lt;")
+        text = text.replace(">", "&gt;")
+        text = text.replace("`", "&#96;")
+        return text
 
     def build_report(
         self,
@@ -96,7 +173,7 @@ class MarkdownGenerator:
         lines = []
 
         # ===== 文档头部元信息 =====
-        lines.append(f"# 错题分析报告")
+        lines.append(f"# 文档分析报告")
         lines.append("")
         lines.append(f"| 属性 | 值 |")
         lines.append(f"|------|-----|")
@@ -117,12 +194,15 @@ class MarkdownGenerator:
             lines.append("| 序号 | 类型 | 内容预览 |")
             lines.append("|------|------|----------|")
             for idx, item in enumerate(layout_items, 1):
-                item_type = item.get("type", "unknown")
+                # B4: item_type 与 content_preview 均来自 API 返回，需统一转义
+                item_type = self._escape_md_table_cell(item.get("type", "unknown"))
                 preview = item.get("content_preview", "")
                 if preview:
-                    preview = preview.replace("|", "\\|").replace("\n", " ")
+                    # 先截断原始文本，再转义，避免截断到 HTML 实体中间
+                    preview = str(preview)
                     if len(preview) > 100:
                         preview = preview[:100] + "..."
+                    preview = self._escape_md_table_cell(preview)
                 else:
                     preview = "(无文字内容)"
                 lines.append(f"| {idx} | **{item_type}** | {preview} |")
@@ -159,8 +239,10 @@ class MarkdownGenerator:
             for i, img_key in enumerate(images.keys(), 1):
                 safe_name = self._safe_image_name(img_key)
                 rel_path = f"imgs/{safe_name}"
-                lines.append(f"![{img_key}]({rel_path})")
-                lines.append(f"*图片 {i}: {img_key}*")
+                # alt 文本使用清理后的纯文件名，避免路径前缀出现在显示文本中
+                display_name = Path(img_key).name if img_key else "image"
+                lines.append(f"![{display_name}]({rel_path})")
+                lines.append(f"*图片 {i}: {display_name}*")
                 lines.append("")
 
         # ===== 原始 API 返回 (JSON) =====
@@ -173,7 +255,7 @@ class MarkdownGenerator:
             lines.append("")
 
         lines.append("---")
-        lines.append("*本文档由错题管理系统自动生成，基于 PaddleOCR-VL / PP-StructureV3*")
+        lines.append("*本文档由 DocFlow 自动生成，基于 PaddleOCR-VL / PP-StructureV3*")
 
         report = "\n".join(lines)
         logger.info(f"报告构建完成，共 {len(report)} 字符")
@@ -217,7 +299,8 @@ class MarkdownGenerator:
         lines.append("| 序号 | 类型 | 区域坐标 | 内容预览 |")
         lines.append("|------|------|----------|----------|")
         for idx, item in enumerate(layout_items, 1):
-            item_type = item.get("type", "unknown")
+            # B4: item_type / region / content_preview 均来自 API 返回，需统一转义
+            item_type = self._escape_md_table_cell(item.get("type", "unknown"))
             region = item.get("region", {})
             region_str = ""
             if region:
@@ -231,18 +314,21 @@ class MarkdownGenerator:
                     h = region.get("height", "")
                     if x != "":
                         region_str = f"({x}, {y}, {w}, {h})"
+            region_str = self._escape_md_table_cell(region_str)
 
             preview = item.get("content_preview", "")
             if preview:
-                preview = str(preview).replace("|", "\\|").replace("\n", " ")
+                # 先截断原始文本，再转义，避免截断到 HTML 实体中间
+                preview = str(preview)
                 if len(preview) > 80:
                     preview = preview[:80] + "..."
+                preview = self._escape_md_table_cell(preview)
             else:
                 preview = "(无文字内容)"
             lines.append(f"| {idx} | **{item_type}** | {region_str} | {preview} |")
         lines.append("")
         lines.append("---")
-        lines.append("*本文档由错题管理系统自动生成 - 版面分析报告*")
+        lines.append("*本文档由 DocFlow 自动生成 - 版面分析报告*")
 
         report = "\n".join(lines)
         logger.info(f"版面分析报告构建完成，共 {len(report)} 字符")
@@ -288,11 +374,23 @@ class MarkdownGenerator:
             if img_key in images:
                 safe_name = self._safe_image_name(img_key)
                 return f"imgs/{safe_name}"
-            # 如果 key 包含路径分隔符（如 imgs/img_xxx），也尝试匹配
-            bare_key = img_key.replace("imgs/", "").replace("imgs\\", "")
+            # 如果 key 包含路径分隔符（如 imgs/img_xxx 或 img/img_xxx），尝试多种前缀剥离
+            for prefix in ("imgs/", "imgs\\", "img/", "img\\", "./", ".\\"):
+                bare_key = img_key
+                if bare_key.startswith(prefix):
+                    bare_key = bare_key[len(prefix):]
+                    break
+            else:
+                bare_key = img_key
             if bare_key in images:
                 safe_name = self._safe_image_name(bare_key)
                 return f"imgs/{safe_name}"
+            # 反向匹配：images 字典的 key 可能包含前缀，而 markdown 引用的是裸文件名
+            bare_img_key = Path(img_key).name
+            for full_key in images:
+                if Path(full_key).name == bare_img_key:
+                    safe_name = self._safe_image_name(full_key)
+                    return f"imgs/{safe_name}"
             return ""
 
         def replace_ref(match):
@@ -339,9 +437,23 @@ class MarkdownGenerator:
 
     @staticmethod
     def _safe_image_name(img_key: str) -> str:
-        """生成安全的图片文件名"""
-        # 移除不安全字符，确保以 .png 结尾
-        safe = re.sub(r'[^\w\-.]', '_', img_key)
+        """生成安全的图片文件名。
+
+        先剥离路径前缀（imgs/, img/, ./ 等），再移除不安全字符。
+        这样 key "imgs/foo.jpg" → "foo.jpg"（而非 "imgs_foo.jpg"）。
+        """
+        # 剥离常见的路径前缀，防止文件名中出现 imgs_ 等冗余前缀
+        clean = img_key
+        for prefix in ("imgs/", "imgs\\", "img/", "img\\", "./", ".\\"):
+            if clean.startswith(prefix):
+                clean = clean[len(prefix):]
+                break
+        # 取纯文件名（防止残留路径分隔符）
+        clean = Path(clean).name
+        # 移除不安全字符
+        safe = re.sub(r'[^\w\-.]', '_', clean)
+        if not safe:
+            safe = "image"
         if not safe.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')):
             safe += '.png'
         return safe
@@ -364,6 +476,8 @@ class MarkdownGenerator:
                 )
                 return None
             try:
+                # SSRF 防护：校验图片 URL，防止下载内网资源
+                _validate_image_url(image_value)
                 headers = {
                     "Cache-Control": "no-cache, no-store, must-revalidate",
                     "Pragma": "no-cache",
@@ -421,6 +535,8 @@ class MarkdownGenerator:
                     "请迁移到 _resolve_image_data_async()",
                     DeprecationWarning, stacklevel=2,
                 )
+                # SSRF 防护：校验图片 URL，防止下载内网资源
+                _validate_image_url(image_value)
                 headers = {
                     "Cache-Control": "no-cache, no-store, must-revalidate",
                     "Pragma": "no-cache",
@@ -500,21 +616,44 @@ class MarkdownGenerator:
             await asyncio.to_thread(_write_text, md_path, report_content)
             logger.info(f"Markdown报告已保存: {md_path}")
 
-            # 2. 保存内嵌图片到 imgs/ 子目录（异步下载 + 线程写盘）
+            # 2. 保存内嵌图片到 imgs/ 子目录（并发下载 + 线程写盘）
             imgs_dir = report_dir / "imgs"
-            await asyncio.to_thread(imgs_dir.mkdir, exist_ok=True)
-            for img_key, img_value in images.items():
-                try:
-                    img_data = await self._resolve_image_data_async(img_value)
-                    if img_data:
-                        safe_name = self._safe_image_name(img_key)
-                        img_path = imgs_dir / safe_name
-                        def _write_bytes(p: Path, d: bytes):
-                            with open(p, "wb") as f:
-                                f.write(d)
-                        await asyncio.to_thread(_write_bytes, img_path, img_data)
-                except Exception as e:
-                    logger.warning(f"保存内嵌图片失败 [{img_key}]: {e}")
+            await asyncio.to_thread(imgs_dir.mkdir, parents=True, exist_ok=True)
+
+            # 性能优化: 使用 asyncio.gather 并发下载所有图片，限制并发数为 8
+            _img_semaphore = asyncio.Semaphore(8)
+            _saved_count = 0
+            _failed_count = 0
+
+            async def _download_and_save_image(img_key: str, img_value: str):
+                nonlocal _saved_count, _failed_count
+                async with _img_semaphore:
+                    try:
+                        img_data = await self._resolve_image_data_async(img_value)
+                        if img_data:
+                            safe_name = self._safe_image_name(img_key)
+                            img_path = imgs_dir / safe_name
+                            def _write_bytes(p: Path, d: bytes):
+                                with open(p, "wb") as f:
+                                    f.write(d)
+                            await asyncio.to_thread(_write_bytes, img_path, img_data)
+                            _saved_count += 1
+                            logger.info(f"图片已保存: {safe_name} ({len(img_data)} bytes)")
+                        else:
+                            _failed_count += 1
+                            logger.warning(f"图片下载返回空数据 [{img_key}]")
+                    except Exception as e:
+                        _failed_count += 1
+                        logger.warning(f"保存内嵌图片失败 [{img_key}]: {e}")
+
+            if images:
+                await asyncio.gather(*[
+                    _download_and_save_image(k, v) for k, v in images.items()
+                ])
+                logger.info(
+                    f"图片保存统计: 成功 {_saved_count}/{len(images)}"
+                    f"{f', 失败 {_failed_count}' if _failed_count else ''}"
+                )
 
             # 3. 保存版面分析可视化图（异步解析）
             if layout_image_base64:

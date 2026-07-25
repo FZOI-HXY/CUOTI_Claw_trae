@@ -1,5 +1,5 @@
 /**
- * 错题管理系统 - Claw
+ * DocFlow — AI智能文档识别与管理系统
  * 前端应用逻辑 - 支持文件夹批量上传
  */
 (function () {
@@ -236,6 +236,20 @@
 
     function addFilesToQueue(files) {
         let added = 0, skipped = 0;
+
+        // 添加新文件前，自动清除已完成/失败的旧队列项，避免新旧混杂
+        const hadStale = state.fileQueue.some(item => item.status === 'done' || item.status === 'error');
+        if (hadStale) {
+            state.fileQueue.forEach(item => {
+                if ((item.status === 'done' || item.status === 'error') && item.previewUrl) {
+                    URL.revokeObjectURL(item.previewUrl);
+                }
+            });
+            state.fileQueue = state.fileQueue.filter(item => item.status !== 'done' && item.status !== 'error');
+            // 清除旧结果区
+            state.batchResults = [];
+            dom.resultSection.style.display = 'none';
+        }
 
         for (const file of files) {
             const ext = '.' + file.name.split('.').pop().toLowerCase();
@@ -517,8 +531,26 @@
 
     async function processAllFiles() {
         if (state.processing) return;
+
+        // 自动清除已完成/失败的旧队列项，避免旧文件被重新处理
+        const staleItems = state.fileQueue.filter(item => item.status === 'done' || item.status === 'error');
+        if (staleItems.length > 0) {
+            staleItems.forEach(item => {
+                if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+            });
+            state.fileQueue = state.fileQueue.filter(item => item.status !== 'done' && item.status !== 'error');
+            renderQueue();
+        }
+
         if (state.fileQueue.length === 0) {
             toast('请先添加文件', 'warning');
+            return;
+        }
+
+        // 只处理 pending 状态的文件，跳过其他状态（防御性编码）
+        const toProcess = state.fileQueue.filter(item => item.status === 'pending');
+        if (toProcess.length === 0) {
+            toast('队列中没有待处理的文件', 'warning');
             return;
         }
 
@@ -538,7 +570,7 @@
         resetSteps();
         setStepActive('upload');
 
-        const total = state.fileQueue.length;
+        const total = toProcess.length;
 
         // ====== 阶段1: 批量上传全部文件 ======
         updateBatchProgress(0, total, '批量上传中…');
@@ -547,7 +579,7 @@
         let uploadDone = 0;
         updateBatchProgress(0, total, `上传 0/${total}…`);
         await Promise.allSettled(
-            state.fileQueue.map(async (item) => {
+            toProcess.map(async (item) => {
                 try {
                     const result = await uploadFile(item);
                     item.fileId = result.file_id;
@@ -699,8 +731,8 @@
         let succeeded = 0;
         let failed = 0;
 
-        // 按原始提交顺序排列结果
-        for (const item of state.fileQueue) {
+        // 按原始提交顺序排列结果（仅遍历本次处理的文件）
+        for (const item of toProcess) {
             if (item.status === 'done') {
                 succeeded++;
                 state.batchResults.push({
@@ -970,7 +1002,7 @@
             if (reportId) {
                 // 去掉可能的前导 ./ 或多余的 imgs/ 前缀（统一由 API 处理）
                 let cleanSrc = src.replace(/^\.\//, '');
-                let url = `${API_BASE}/api/report/${reportId}/image/${encodeURI(cleanSrc)}`;
+                let url = `${API_BASE}/api/report/${encodeURIComponent(reportId)}/image/${encodeURI(cleanSrc)}`;
                 // F-001 修复：图片通过 <img src> 加载，无法附加自定义头，用 query param 传递 token
                 if (state.clawToken) {
                     url += `?token=${encodeURIComponent(state.clawToken)}`;
@@ -1531,8 +1563,31 @@
     });
 
     // ============ 本地认证 token 获取 ============
-    // 从 /api/init 获取 X-Claw-Token（后端仅允许本机访问）。
+    // token 来源优先级：
+    //   1. URL 参数 ?claw_token=xxx（公网部署场景，用户通过带 token 的 URL 访问）
+    //   2. localStorage（浏览器持久化，避免每次都需带 URL 参数）
+    //   3. /api/init（仅本机访问，桌面端或本地开发场景）
     async function fetchClawToken() {
+        // 1. URL 参数（公网部署）
+        const urlToken = new URLSearchParams(window.location.search).get('claw_token');
+        if (urlToken) {
+            state.clawToken = urlToken;
+            localStorage.setItem('claw_token', urlToken);
+            // 清除 URL 中的 token 参数，防止泄露到 Referer 或历史记录
+            const url = new URL(window.location.href);
+            url.searchParams.delete('claw_token');
+            window.history.replaceState({}, document.title, url.toString());
+            return;
+        }
+
+        // 2. localStorage（回访场景）
+        const storedToken = localStorage.getItem('claw_token');
+        if (storedToken) {
+            state.clawToken = storedToken;
+            return;
+        }
+
+        // 3. /api/init（本机访问场景）
         try {
             const res = await fetch(`${API_BASE}/api/init`);
             if (res.ok) {

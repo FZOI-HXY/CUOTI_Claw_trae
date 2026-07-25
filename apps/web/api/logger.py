@@ -1,5 +1,5 @@
 """
-错题管理系统 - 日志模块
+DocFlow — 日志模块
 """
 import logging
 import sys

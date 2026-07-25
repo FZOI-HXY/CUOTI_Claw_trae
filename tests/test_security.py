@@ -776,6 +776,8 @@ class TestSecurityUtils:
         backend._check_magic_bytes(b"\x89PNG\r\n")
         backend._check_magic_bytes(b"%PDF-")
         backend._check_magic_bytes(b"BM\x00\x00")
+        # WebP: RIFF....WEBP（bytes 0-3=RIFF, bytes 8-11=WEBP）
+        backend._check_magic_bytes(b"RIFF\x00\x00\x00\x00WEBP")
 
     def test_check_magic_bytes_invalid(self):
         """_check_magic_bytes 应拒绝无效格式"""
@@ -798,6 +800,11 @@ class TestSecurityUtils:
 
         with pytest.raises(HTTPException) as exc_info:
             backend._check_magic_bytes(b"\x00\x00\x00")
+        assert exc_info.value.status_code == 400
+
+        # AVI 文件也以 RIFF 开头，但 bytes 8-11 不是 WEBP，应被拒绝
+        with pytest.raises(HTTPException) as exc_info:
+            backend._check_magic_bytes(b"RIFF\x00\x00\x00\x00AVI ")
         assert exc_info.value.status_code == 400
 
     def test_safe_report_image_path(self):
@@ -1027,9 +1034,9 @@ class TestAuthMiddleware:
         """无效 token 应被拒绝（401 Unauthorized）"""
         from apps.web.api.config import settings
         original_token = settings.claw_auth_token
+        backend = load_backend_app(temp_dir, "auth_reject")
         settings.claw_auth_token = "valid_test_token_123"
         try:
-            backend = load_backend_app(temp_dir, "auth_reject")
             client = TestClient(backend.app)
 
             # POST 请求需要认证
@@ -1047,9 +1054,9 @@ class TestAuthMiddleware:
         """有效 token 应被接受"""
         from apps.web.api.config import settings
         original_token = settings.claw_auth_token
+        backend = load_backend_app(temp_dir, "auth_accept")
         settings.claw_auth_token = "valid_test_token_456"
         try:
-            backend = load_backend_app(temp_dir, "auth_accept")
             client = TestClient(backend.app)
 
             # 正确的 token
@@ -1066,9 +1073,10 @@ class TestAuthMiddleware:
         """F-001 修复：GET 请求访问业务端点需要认证（不再全局豁免）"""
         from apps.web.api.config import settings
         original_token = settings.claw_auth_token
+        # 先加载 backend（会清除 token），再设置 token
+        backend = load_backend_app(temp_dir, "auth_get_protect")
         settings.claw_auth_token = "test_token_for_auth"
         try:
-            backend = load_backend_app(temp_dir, "auth_get_protect")
             client = TestClient(backend.app)
 
             # GET 业务端点无 token 应返回 401
@@ -1099,9 +1107,9 @@ class TestAuthMiddleware:
         """健康检查端点不需要认证"""
         from apps.web.api.config import settings
         original_token = settings.claw_auth_token
+        backend = load_backend_app(temp_dir, "auth_health_exempt")
         settings.claw_auth_token = "test_token_health"
         try:
-            backend = load_backend_app(temp_dir, "auth_health_exempt")
             client = TestClient(backend.app)
 
             # 健康检查不需要认证（POST 请求）
@@ -1307,3 +1315,317 @@ class TestCleanupRateLimitStore:
         assert len(backend._rate_limit_store["client1"]) == 2
         assert "client2" in backend._rate_limit_store
         assert len(backend._rate_limit_store["client2"]) == 1
+
+
+# ──────────────────────────────────────────────────
+# 14. 批量下载ZIP路径穿越处理测试（F-001修复补测）
+# ──────────────────────────────────────────────────
+
+@pytest.mark.integration
+class TestBatchDownloadZipPathTraversal:
+    """测试批量下载ZIP打包中的路径穿越防护（_build_batch_zip try/except）"""
+
+    def test_batch_download_skips_invalid_report_id(self, temp_dir, load_backend_app):
+        """批量下载应跳过路径穿越格式的report_id，继续处理其他合法ID"""
+        import io
+        import zipfile
+        backend = load_backend_app(temp_dir, "batch_zip_invalid")
+
+        # 创建一个合法的报告目录
+        output_dir = backend.settings.get_output_path()
+        valid_report_dir = output_dir / "valid_report_123"
+        valid_report_dir.mkdir(parents=True, exist_ok=True)
+        (valid_report_dir / "report.md").write_text("# Valid Report")
+
+        client = TestClient(backend.app)
+
+        # 包含路径穿越ID和合法ID的混合请求
+        resp = client.post(
+            "/api/batch/download",
+            json={"report_ids": ["../../etc/passwd", "valid_report_123"]},
+        )
+
+        # 应返回200（跳过非法ID，继续处理合法ID）
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/zip"
+
+        # 验证ZIP内容包含合法报告
+        zip_data = io.BytesIO(resp.content)
+        with zipfile.ZipFile(zip_data, "r") as zf:
+            names = zf.namelist()
+            # 合法报告应在ZIP中
+            assert any("valid_report_123" in n for n in names)
+
+    def test_batch_download_handles_nonexistent_report_gracefully(self, temp_dir, load_backend_app):
+        """批量下载应跳过不存在的报告ID，不报错"""
+        import io
+        import zipfile
+        backend = load_backend_app(temp_dir, "batch_zip_nonexist")
+
+        # 创建一个报告
+        output_dir = backend.settings.get_output_path()
+        report_dir = output_dir / "existing_report"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "report.md").write_text("# Test")
+
+        client = TestClient(backend.app)
+
+        resp = client.post(
+            "/api/batch/download",
+            json={"report_ids": ["nonexistent_report", "existing_report"]},
+        )
+
+        assert resp.status_code == 200
+        zip_data = io.BytesIO(resp.content)
+        with zipfile.ZipFile(zip_data, "r") as zf:
+            names = zf.namelist()
+            assert any("existing_report" in n for n in names)
+
+    def test_batch_download_all_invalid_returns_400(self, temp_dir, load_backend_app):
+        """所有report_id格式均非法时应返回400"""
+        backend = load_backend_app(temp_dir, "batch_zip_all_invalid")
+
+        client = TestClient(backend.app)
+
+        resp = client.post(
+            "/api/batch/download",
+            json={"report_ids": ["../../etc/passwd", "../secret", "..\\windows"]},
+        )
+
+        assert resp.status_code == 400
+        assert "格式均非法" in resp.json()["error"] or "invalid" in resp.json()["error"].lower()
+
+
+# ──────────────────────────────────────────────────
+# 15. 图片端点token查询参数回退测试（F-001修复补测）
+# ──────────────────────────────────────────────────
+
+@pytest.mark.integration
+class TestImageEndpointTokenFallback:
+    """测试图片端点通过?token=查询参数传递认证（<img src>无法附加自定义头）"""
+
+    def test_image_endpoint_accepts_token_query_param(self, temp_dir, load_backend_app):
+        """图片端点应接受?token=查询参数作为认证回退"""
+        from apps.web.api.config import settings
+        original_token = settings.claw_auth_token
+        backend = load_backend_app(temp_dir, "image_token_fallback")
+        settings.claw_auth_token = "test_image_token_xyz"
+        try:
+
+            # 创建报告和图片
+            output_dir = settings.get_output_path()
+            report_dir = output_dir / "test_report_img"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            (report_dir / "report.md").write_text("# Test")
+            (report_dir / "imgs").mkdir(exist_ok=True)
+            img_path = report_dir / "imgs" / "test.png"
+            img_path.write_bytes(b'\x89PNG\r\n\x1a\n' + b'X' * 100)
+
+            client = TestClient(backend.app)
+
+            # 无token应返回401
+            resp = client.get(f"/api/report/test_report_img/image/imgs/test.png")
+            assert resp.status_code == 401
+
+            # 错误token应返回401
+            resp = client.get(f"/api/report/test_report_img/image/imgs/test.png?token=wrong")
+            assert resp.status_code == 401
+
+            # 正确token应返回200
+            resp = client.get(f"/api/report/test_report_img/image/imgs/test.png?token=test_image_token_xyz")
+            assert resp.status_code == 200
+            assert resp.headers["content-type"] == "image/png"
+        finally:
+            settings.claw_auth_token = original_token
+
+    def test_image_endpoint_rejects_without_auth(self, temp_dir, load_backend_app):
+        """图片端点无认证应返回401"""
+        from apps.web.api.config import settings
+        original_token = settings.claw_auth_token
+        backend = load_backend_app(temp_dir, "image_no_auth")
+        settings.claw_auth_token = "img_auth_required"
+        try:
+
+            output_dir = settings.get_output_path()
+            report_dir = output_dir / "report_auth_test"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            (report_dir / "report.md").write_text("# Test")
+            (report_dir / "imgs").mkdir(exist_ok=True)
+            img_path = report_dir / "imgs" / "img.jpg"
+            img_path.write_bytes(b'\xff\xd8\xff' + b'Y' * 50)
+
+            client = TestClient(backend.app)
+
+            # 无token查询参数
+            resp = client.get("/api/report/report_auth_test/image/imgs/img.jpg")
+            assert resp.status_code == 401
+        finally:
+            settings.claw_auth_token = original_token
+
+
+# ──────────────────────────────────────────────────
+# 16. 并发轮询互斥API层集成测试（F-001修复补测）
+# ──────────────────────────────────────────────────
+
+@pytest.mark.integration
+class TestPollMutexApiIntegration:
+    """测试并发轮询互斥机制的API层集成（防止TOCTOU竞态）"""
+
+    def test_concurrent_poll_requests_return_mutex_message(self, temp_dir, load_backend_app):
+        """并发轮询同一task_id时，后续请求应返回'另一个轮询请求正在处理中'消息"""
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import AsyncMock, patch
+
+        backend = load_backend_app(temp_dir, "poll_mutex_api")
+
+        # Mock poll_once使其延迟返回，模拟长时间处理
+        original_poll_once = backend.paddle_service.poll_once
+
+        async def slow_poll_once(task_id, filename):
+            await asyncio.sleep(0.5)  # 模拟500ms处理时间
+            return {"status": "done", "state": "done", "raw_result": {}}
+
+        with patch.object(backend.paddle_service, "poll_once", new_callable=AsyncMock) as mock_poll:
+            mock_poll.side_effect = slow_poll_once
+
+            # Mock extract_result
+            with patch.object(backend.paddle_service, "extract_result") as mock_extract:
+                mock_extract.return_value = {
+                    "markdown_text": "# T",
+                    "images": {},
+                    "layout_image": None,
+                    "layout_items": []
+                }
+
+                # 预先设置任务状态
+                backend.ts.set_task("test_mutex_task", {
+                    "status": "processing",
+                    "filename": "test.jpg",
+                    "file_id": "abc123",
+                    "job_id": "test_mutex_task",
+                    "submit_time": "2026-01-01T00:00:00"
+                })
+
+                client = TestClient(backend.app)
+                results = []
+
+                def poll_request():
+                    resp = client.post("/api/poll/test_mutex_task")
+                    results.append(resp.json())
+
+                # 并发发送2个轮询请求
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [executor.submit(poll_request) for _ in range(2)]
+                    for f in futures:
+                        f.result()
+
+                # 至少有一个请求应收到"另一个轮询请求正在处理中"消息
+                mutex_messages = [r for r in results if r.get("progress", {}).get("message") == "另一个轮询请求正在处理中"]
+                assert len(mutex_messages) >= 1, f"应至少有1个请求收到互斥消息，实际: {results}"
+
+
+# ──────────────────────────────────────────────────
+# 17. 批量下载layout报告XSS转义测试（F-001修复补测）
+# ──────────────────────────────────────────────────
+
+@pytest.mark.integration
+class TestBatchLayoutReportXssEscape:
+    """测试批量下载layout报告中item_type和content_preview的XSS转义"""
+
+    def test_batch_layout_escapes_item_type_xss(self, temp_dir, load_backend_app):
+        """item_type中的XSS载荷应被转义"""
+        backend = load_backend_app(temp_dir, "layout_xss_type")
+
+        client = TestClient(backend.app)
+
+        # 包含XSS载荷的layout_items
+        malicious_items = [
+            {
+                "type": "<script>alert('xss')</script>",
+                "region": {"bbox": [0, 0, 100, 100]},
+                "content_preview": "normal content"
+            }
+        ]
+
+        resp = client.post(
+            "/api/batch/download-layout",
+            json={
+                "files": [
+                    {
+                        "filename": "test_file.pdf",
+                        "layout_items": malicious_items,
+                        "processing_time": 1.5
+                    }
+                ]
+            }
+        )
+
+        assert resp.status_code == 200
+        content = resp.text
+
+        # <script>标签应被转义为 &lt;script&gt;
+        assert "<script>" not in content, "item_type中的<script>标签未被转义"
+        assert "&lt;script&gt;" in content, "item_type应包含转义后的&lt;script&gt;"
+
+    def test_batch_layout_escapes_content_preview_xss(self, temp_dir, load_backend_app):
+        """content_preview中的XSS载荷应被转义"""
+        backend = load_backend_app(temp_dir, "layout_xss_preview")
+
+        client = TestClient(backend.app)
+
+        malicious_items = [
+            {
+                "type": "text",
+                "region": {"x": 0, "y": 0, "width": 100, "height": 50},
+                "content_preview": "<img src=x onerror=alert(1)>evil content"
+            }
+        ]
+
+        resp = client.post(
+            "/api/batch/download-layout",
+            json={
+                "files": [
+                    {
+                        "filename": "normal_file.jpg",
+                        "layout_items": malicious_items,
+                        "processing_time": 2.0
+                    }
+                ]
+            }
+        )
+
+        assert resp.status_code == 200
+        content = resp.text
+
+        # <img>标签应被转义
+        assert "<img src=x onerror" not in content, "content_preview中的<img>标签未被转义"
+        assert "&lt;img" in content, "content_preview应包含转义后的&lt;img"
+
+    def test_batch_layout_escapes_filename_special_chars(self, temp_dir, load_backend_app):
+        """filename中的Markdown特殊字符应被转义"""
+        backend = load_backend_app(temp_dir, "layout_xss_filename")
+
+        client = TestClient(backend.app)
+
+        resp = client.post(
+            "/api/batch/download-layout",
+            json={
+                "files": [
+                    {
+                        "filename": "test|file`name<script>.pdf",
+                        "layout_items": [
+                            {"type": "text", "region": {}, "content_preview": "normal"}
+                        ],
+                        "processing_time": 1.0
+                    }
+                ]
+            }
+        )
+
+        assert resp.status_code == 200
+        content = resp.text
+
+        # filename中的特殊字符应被转义
+        assert "<script>" not in content, "filename中的<script>未被转义"
+        assert "&lt;script&gt;" in content, "filename应包含转义后的&lt;script&gt;"

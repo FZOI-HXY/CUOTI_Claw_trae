@@ -322,7 +322,7 @@ class ConfigTabMixin:
 
     def _on_config_loaded(self, config: dict):
         self.cfg_api_url.setText(config.get("paddleocr_api_url", ""))
-        model = config.get("paddleocr_model", "PP-StructureV3")
+        model = config.get("paddleocr_model", "PaddleOCR-VL-1.6")
         idx = self.cfg_model.findText(model)
         if idx >= 0:
             self.cfg_model.setCurrentIndex(idx)
@@ -415,7 +415,7 @@ class ConfigTabMixin:
 
     def _test_api_connection_visual(self):
         """测试 API 连接并在卡片内显示结果"""
-        self._api_test_result.setText("⏳ 正在测试...")
+        self._api_test_result.setText("⏳ 正在测试 PaddleOCR API...")
         self._api_test_result.setObjectName("")
         s = self._api_test_result.style()
         if s is not None:
@@ -423,15 +423,16 @@ class ConfigTabMixin:
             s.polish(self._api_test_result)
         self._set_badge(self._api_status_badge, "badgeWarning", "⏳ 测试中...")
 
-        worker = ApiTask(self.api_base, "GET", "/api/config")
+        worker = ApiTask(self.api_base, "GET", "/api/test-paddleocr")
         worker.finished.connect(self._on_test_success)
         worker.error.connect(self._on_test_error)
         worker.start()
 
     def _on_test_success(self, data):
-        # 检查 API Token 是否已配置（而非仅检测本地服务健康）
-        if data.get("api_key_configured"):
-            self._api_test_result.setText("✓ 服务连接正常，API Token 已配置")
+        # /api/test-paddleocr 返回 {success, error, detail, status_code}
+        if data.get("success"):
+            status_code = data.get("status_code", "")
+            self._api_test_result.setText(f"✓ PaddleOCR API 连接正常 (HTTP {status_code})")
             self._api_test_result.setObjectName("testResultSuccess")
             s = self._api_test_result.style()
             if s is not None:
@@ -439,14 +440,18 @@ class ConfigTabMixin:
                 s.polish(self._api_test_result)
             self._set_badge(self._api_status_badge, "badgeSuccess", "✓ API 可用")
         else:
-            # 服务可连接但 Token 未配置
-            self._api_test_result.setText("⚠ 服务可连接，但 API Token 未配置")
+            error_msg = data.get("error", "未知错误")
+            detail = data.get("detail", "")
+            display = f"✗ {error_msg}"
+            if detail:
+                display += f"（{detail}）"
+            self._api_test_result.setText(display)
             self._api_test_result.setObjectName("testResultError")
             s = self._api_test_result.style()
             if s is not None:
                 s.unpolish(self._api_test_result)
                 s.polish(self._api_test_result)
-            self._set_badge(self._api_status_badge, "badgeWarning", "⚠ Token 未配置")
+            self._set_badge(self._api_status_badge, "badgeError", "✗ API 不可用")
 
     def _on_test_error(self, err: str):
         self._api_test_result.setText(f"✗ 连接失败: {err}")

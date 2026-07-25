@@ -1,6 +1,6 @@
 """
 应用图标生成器
-使用 Pillow 生成一个简洁的错题管理应用图标
+使用 Pillow 生成一个简洁的文档识别应用图标
 """
 import os
 from PIL import Image, ImageDraw, ImageFont

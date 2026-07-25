@@ -1,0 +1,8 @@
+tunnel: e87e7ffb-0b1d-4d5e-ae1e-994440ede7cc
+credentials-file: C:\Users\IDC\CodeBuddy\CUOTIClaw_trae\deploy\cloudflared\e87e7ffb-0b1d-4d5e-ae1e-994440ede7cc.json
+origincert: C:\Users\IDC\CodeBuddy\CUOTIClaw_trae\deploy\cloudflared\cert.pem
+
+ingress:
+  - hostname: huxiaoyang.dpdns.org
+    service: http://localhost:8500
+  - service: http_status:404

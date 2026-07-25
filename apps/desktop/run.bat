@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
-title Claw 错题管理系统 - 独立桌面应用
+title DocFlow — 独立桌面应用
 echo ========================================
-echo Claw 错题管理系统 - 独立桌面应用
+echo DocFlow — 独立桌面应用
 echo ========================================
 echo.
 echo 前提: 请确保后端服务已启动

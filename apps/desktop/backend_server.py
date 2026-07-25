@@ -3,8 +3,8 @@
 
 在后台线程启动 uvicorn，使 PyQt6 应用无需外部后端即可运行。
 启动时自动设置数据目录和 .env 路径：
-  - 打包后：所有数据与 Claw.exe 在同一目录（便携模式）
-  - 开发模式：使用 %APPDATA%/Claw/ 目录
+  - 打包后：所有数据与 DocFlow.exe 在同一目录（便携模式）
+  - 开发模式：使用 %APPDATA%/DocFlow/ 目录
 """
 import os
 import sys
@@ -38,14 +38,14 @@ def _get_project_root() -> str:
 def _get_data_dir() -> str:
     """获取数据目录，不存在则创建
 
-    打包后 (frozen): Claw.exe 所在目录（便携模式，配置与程序同目录）
-    开发模式: %APPDATA%/Claw/（避免污染源码目录）
+    打包后 (frozen): DocFlow.exe 所在目录（便携模式，配置与程序同目录）
+    开发模式: %APPDATA%/DocFlow/（避免污染源码目录）
     """
     if getattr(sys, 'frozen', False):
         data_dir = os.path.dirname(sys.executable)
     else:
         appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-        data_dir = os.path.join(appdata, "Claw")
+        data_dir = os.path.join(appdata, "DocFlow")
     os.makedirs(data_dir, exist_ok=True)
     return data_dir
 
@@ -93,7 +93,7 @@ def _setup_environment(data_dir: str):
 
     # S06: 生成随机认证 token，设置到环境变量
     # Settings 初始化时会读取 CLAW_AUTH_TOKEN，main.py 的认证中间件会校验此 token。
-    # 桌面端 ApiTask 会从环境变量读取 token 并添加到请求头 X-Claw-Token。
+    # 桌面端 ApiTask 会从环境变量读取 token 并添加到请求头 X-DocFlow-Token。
     if not os.environ.get("CLAW_AUTH_TOKEN"):
         os.environ["CLAW_AUTH_TOKEN"] = secrets.token_urlsafe(32)
 
@@ -116,7 +116,7 @@ def _ensure_env_file(data_dir: str):
 
     开发模式：直接使用源码 apps/web/api/.env，无需复制（_setup_environment 已设置路径）。
     frozen 模式下，如果 exe 同级 .env 不存在或 key 为空，
-    会尝试从开发模式数据目录（%APPDATA%/Claw/.env）继承配置。
+    会尝试从开发模式数据目录（%APPDATA%/DocFlow/.env）继承配置。
     """
     # 开发模式：.env 就是源码文件，无需复制或创建
     if not getattr(sys, 'frozen', False):
@@ -146,7 +146,7 @@ def _ensure_env_file(data_dir: str):
 
         # 2. 尝试从开发模式数据目录复制（frozen 模式继承开发配置）
         appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-        dev_env = os.path.join(appdata, "Claw", ".env")
+        dev_env = os.path.join(appdata, "DocFlow", ".env")
         if os.path.exists(dev_env) and dev_env != env_path:
             shutil.copy(dev_env, env_path)
             print("[backend_server] 已从开发配置继承 .env", flush=True)
@@ -154,11 +154,11 @@ def _ensure_env_file(data_dir: str):
 
         # 3. 创建默认 .env（key 为空，需用户手动配置）
         with open(env_path, "w", encoding="utf-8") as f:
-            f.write("# Claw 错题管理系统 配置文件\n")
+            f.write("# DocFlow 配置文件\n")
             f.write("# 首次使用请在应用中配置 API Token（系统配置 → API Token）\n")
             f.write("# 从 https://aistudio.baidu.com/paddleocr/task 获取你的 API Token\n")
             f.write('PADDLEOCR_API_KEY=\n')
-            f.write('PADDLEOCR_MODEL=PP-StructureV3\n')
+            f.write('PADDLEOCR_MODEL=PaddleOCR-VL-1.6\n')
             f.write('PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs\n')
             f.write('HOST=127.0.0.1\n')
             f.write('PORT=8500\n')
@@ -172,7 +172,7 @@ def _ensure_env_file(data_dir: str):
 
     # key 为空 → 尝试从开发模式数据目录继承
     appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-    dev_env = os.path.join(appdata, "Claw", ".env")
+    dev_env = os.path.join(appdata, "DocFlow", ".env")
     if os.path.exists(dev_env) and dev_env != env_path:
         dev_key = _read_env_key(dev_env)
         if dev_key:

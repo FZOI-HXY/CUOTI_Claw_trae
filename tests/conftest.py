@@ -1,5 +1,5 @@
 """
-Claw 错题管理系统 - Pytest 全局配置与 Fixtures
+DocFlow — Pytest 全局配置与 Fixtures
 
 使用方法:
     pytest tests/ -v --tb=short
@@ -124,14 +124,14 @@ def mock_ocr_jsonl_response():
         "result": {
             "layoutParsingResults": [{
                 "markdown": {
-                    "text": "# 错题分析报告\n\n## 题目\n已知三角形 ABC，AB=3，BC=4，AC=5，求角度 A。\n\n## 解答\n由余弦定理：\n$$\\cos A = \\frac{AB^2 + AC^2 - BC^2}{2 \\cdot AB \\cdot AC} = \\frac{9+25-16}{30} = \\frac{3}{5}$$\n\n$$A = \\arccos(0.6) \\approx 53.13^\\circ$$",
+                    "text": "# 文档分析报告\n\n## 题目\n已知三角形 ABC，AB=3，BC=4，AC=5，求角度 A。\n\n## 解答\n由余弦定理：\n$$\\cos A = \\frac{AB^2 + AC^2 - BC^2}{2 \\cdot AB \\cdot AC} = \\frac{9+25-16}{30} = \\frac{3}{5}$$\n\n$$A = \\arccos(0.6) \\approx 53.13^\\circ$$",
                     "images": {},
                 },
                 "layoutImageInfo": {
                     "imageBase64": "",
                 },
                 "parsingInfoList": [
-                    {"blockType": "title", "region": {}, "contentPreview": "错题分析报告"},
+                    {"blockType": "title", "region": {}, "contentPreview": "文档分析报告"},
                     {"blockType": "text", "region": {}, "contentPreview": "已知三角形 ABC..."},
                 ],
             }],
@@ -229,27 +229,30 @@ def load_backend_app():
         settings.log_dir = str(temp_dir / "logs")
         # 2. 配置 mock API key（避免提交时报错）
         settings.paddleocr_api_key = "test_token_for_mock"
+        # 3. 清除 claw_auth_token（确保测试环境默认不启用认证中间件）
+        #    需要认证的测试（TestAuthMiddleware）应单独设置 token
+        settings.claw_auth_token = ""
 
-        # 3. 创建目录
+        # 4. 创建目录
         Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
         Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
         Path(settings.log_dir).mkdir(parents=True, exist_ok=True)
 
-        # 4. 用 importlib.util 加载 main.py（module name 含 id(temp_dir) 保证唯一）
+        # 5. 用 importlib.util 加载 main.py（module name 含 id(temp_dir) 保证唯一）
         backend_main_path = PROJECT_ROOT / "apps" / "web" / "api" / "main.py"
         module_name = f"backend_main_{name_suffix}_{id(temp_dir)}"
         spec = importlib.util.spec_from_file_location(module_name, backend_main_path)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"无法加载后端模块: {backend_main_path}")
         backend_main = importlib.util.module_from_spec(spec)
-        # 5. 注册到 sys.modules 并 exec_module
+        # 6. 注册到 sys.modules 并 exec_module
         sys.modules[module_name] = backend_main
         spec.loader.exec_module(backend_main)
 
-        # 6. 清空任务存储和历史（重置测试状态）
+        # 7. 清空任务存储和历史（重置测试状态）
         task_service._task_store.clear()
         task_service._history.clear()
-        # 7. 重置 DB 连接：settings.output_dir 已改为 temp_dir，
+        # 8. 重置 DB 连接：settings.output_dir 已改为 temp_dir，
         # 关闭旧连接使其在 temp_dir 下重新初始化，避免查询到旧 DB 残留记录
         if task_service._db is not None:
             try:
@@ -271,7 +274,7 @@ def load_backend_app():
 def sample_markdown_text():
     """示例 Markdown 文本"""
     return (
-        "# 数学错题分析\n\n"
+        "# 数学文档分析\n\n"
         "## 题目\n"
         "已知函数 f(x)=x²+2x+1，求 f(3) 的值。\n\n"
         "## 错解\n"

@@ -1,8 +1,9 @@
-# Claw - 错题管理系统
+# Claw / DocFlow — AI智能文档识别与管理系统
 
-基于 PaddleOCR 的智能错题识别与管理系统，采用前后端分离架构。
+基于 PaddleOCR 的智能文档识别与管理系统，采用前后端分离架构。支持错题、笔记、试卷、合同、票据等多类型文档的 AI 自动识别与结构化归档。
 
 > 参考文档: [百度AI Studio PaddleOCR 异步API文档](https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5)
+> GitHub: [github.com/FZOI-HXY/CUOTI_Claw_trae](https://github.com/FZOI-HXY/CUOTI_Claw_trae)
 
 ## 系统架构
 
@@ -38,8 +39,19 @@ Claw/
 │   └── logs/
 ├── tests/                      # 测试套件
 ├── docs/                       # 文档
-│   ├── DEPLOY.md
-│   └── USAGE.md
+│   ├── DEPLOY.md               # 部署指南
+│   ├── CONTEST.md              # 参赛方案
+│   ├── USAGE.md                # 使用说明
+│   ├── CODE_WIKI.md            # 代码文档
+│   ├── reports/                # HTML 报告
+│   └── archive/                # 归档文档
+├── deploy/                     # 部署配置
+│   └── nginx/                  # Nginx 反向代理
+├── Dockerfile                  # Docker 镜像构建
+├── Dockerfile.fly              # Fly.io 专用镜像
+├── docker-compose.yml          # Docker Compose 编排
+├── fly.toml                    # Fly.io 配置
+├── deploy-fly.sh               # Fly.io 一键部署脚本
 └── README.md
 ```
 

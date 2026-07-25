@@ -1,5 +1,5 @@
 """
-错题管理系统 - PaddleOCR API 服务
+DocFlow — PaddleOCR API 服务
 基于百度AI Studio PaddleOCR官方API
 
 支持模型:
@@ -20,13 +20,96 @@ import asyncio
 import json
 import time
 import io
+import socket
+import ipaddress
 from typing import Optional, Dict, Any
+from urllib.parse import urlparse
 import httpx
 from apps.web.api.logger import setup_logger
 from apps.web.api.config import settings
 from apps.web.api.services.paddle_parser import extract_ocr_result
 
 logger = setup_logger("PaddleOCRService")
+
+
+# ---------------------------------------------------------------------------
+# B7: PaddleOCR 结果 URL 安全校验
+#   main.py 也导入了 paddle_service，直接 from main import _is_internal_ip
+#   会造成循环导入，故在此模块内独立实现等价逻辑。
+# ---------------------------------------------------------------------------
+
+
+class ResultUrlValidationError(ValueError):
+    """B7: PaddleOCR 结果 URL 校验失败"""
+
+
+def _is_internal_ip(host: str) -> bool:
+    """判断主机名是否为内网地址或 localhost
+
+    同时检查主机名本身是否为内网 IP，以及域名解析后的 IP 是否为内网地址，
+    防止攻击者使用解析到内网 IP 的域名绕过 SSRF 防护。
+    （与 main.py 中 _is_internal_ip 逻辑保持一致）
+    """
+    if not host:
+        return True
+    if host in ("localhost",):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        pass
+
+    try:
+        ips = socket.getaddrinfo(host, None, socket.AF_INET)
+        for _, _, _, _, (ip_addr, _) in ips:
+            ip = ipaddress.ip_address(ip_addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return True
+    except (socket.gaierror, ValueError):
+        pass
+
+    try:
+        ips = socket.getaddrinfo(host, None, socket.AF_INET6)
+        for _, _, _, _, (ip_addr, _, _, _) in ips:
+            ip = ipaddress.ip_address(ip_addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return True
+    except (socket.gaierror, ValueError):
+        pass
+
+    return False
+
+
+def _validate_result_url(url: str) -> None:
+    """B7: 校验 PaddleOCR API 返回的结果 URL，防止 SSRF 攻击
+
+    校验规则:
+      1. URL 非空，且必须以 http:// 或 https:// 开头
+      2. 主机名不能为空
+      3. 拒绝 localhost 和内网 IP（含解析后指向内网的域名）
+
+    校验失败时抛出 ResultUrlValidationError，由调用方捕获并返回错误状态。
+    """
+    if not url:
+        raise ResultUrlValidationError("结果 URL 为空")
+    if not (url.startswith("https://") or url.startswith("http://")):
+        raise ResultUrlValidationError(
+            f"结果 URL 必须使用 http(s) 协议: {url[:80]}..."
+        )
+    try:
+        parsed = urlparse(url)
+    except Exception as e:
+        raise ResultUrlValidationError(f"结果 URL 解析失败: {e}")
+    host = parsed.hostname or ""
+    if not host:
+        raise ResultUrlValidationError(
+            f"结果 URL 主机名无效: {url[:80]}..."
+        )
+    if _is_internal_ip(host):
+        raise ResultUrlValidationError(
+            f"结果 URL 不允许指向内网地址或 localhost: {url[:80]}..."
+        )
 
 # 超时配置（httpx.Timeout 分离 connect/read/write/pool 超时）
 TIMEOUT_API_GET = httpx.Timeout(connect=10.0, read=25.0, write=10.0, pool=5.0)
@@ -85,7 +168,8 @@ class PaddleOCRService:
         return bool(self.token and self.token.strip())
 
     def _build_headers(self, content_type: Optional[str] = None) -> Dict[str, str]:
-        headers = {"Authorization": f"bearer {self.token}"}
+        # RFC 6750: Bearer 首字母须大写，部分严格服务器会拒绝小写 bearer
+        headers = {"Authorization": f"Bearer {self.token}"}
         if content_type:
             headers["Content-Type"] = content_type
         return headers
@@ -130,7 +214,8 @@ class PaddleOCRService:
     def _parse_error(self, result: Dict[str, Any]) -> str:
         """解析 API 返回的错误信息"""
         code = result.get("code")
-        if code and code in ERROR_CODE_MAP:
+        # 使用 `code is not None` 而非 `code`，避免 code=0 时被 falsy 短路
+        if code is not None and code in ERROR_CODE_MAP:
             return f"[{code}] {ERROR_CODE_MAP[code]}"
         return result.get("errorMsg") or result.get("message") or f"未知错误 (code={code})"
 
@@ -300,34 +385,33 @@ class PaddleOCRService:
                     f"页数={extracted_pages}/{total_pages}"
                 )
 
-                # 下载结果 JSON
-                json_text = ""
-                raw_json = None
-                if json_url:
-                    try:
-                        json_text, raw_json = await self._download_result_json(json_url)
-                        logger.info(f"下载JSON结果成功 [{filename}]: {len(json_text)} 字符")
-                    except Exception as e:
-                        exc_name = type(e).__name__
-                        logger.error(f"下载JSON结果失败 [{filename}]: [{exc_name}] {e}")
-                        return {"status": "error", "error": f"下载结果失败: {e}"}
-                else:
+                # 性能优化：并发下载 JSON 和 Markdown 结果，共享连接池
+                dl = await self._download_results_concurrent(
+                    json_url, markdown_url, filename
+                )
+                if dl["json_error"]:
+                    exc_name = type(dl["json_error"]).__name__
+                    logger.error(
+                        f"下载JSON结果失败 [{filename}]: [{exc_name}] {dl['json_error']}"
+                    )
+                    return {"status": "error", "error": f"下载结果失败: {dl['json_error']}"}
+                # 区分"URL 为空"和"下载内容为空"两种情况，避免误导排障
+                if not json_url:
                     logger.warning(f"resultUrl.jsonUrl 为空 [{filename}]")
-
-                # 下载 Markdown 结果（可选）
-                markdown_text = ""
-                if markdown_url:
-                    try:
-                        markdown_text = await self._download_markdown_result(markdown_url)
-                        logger.info(f"下载Markdown结果成功 [{filename}]: {len(markdown_text)} 字符")
-                    except Exception as e:
-                        logger.warning(f"下载Markdown结果失败 [{filename}]: {e}")
+                elif dl["json_text"]:
+                    logger.info(f"下载JSON结果成功 [{filename}]: {len(dl['json_text'])} 字符")
+                else:
+                    logger.warning(f"下载JSON结果内容为空 [{filename}]")
+                if dl["markdown_error"]:
+                    logger.warning(f"下载Markdown结果失败 [{filename}]: {dl['markdown_error']}")
+                elif dl["markdown_text"]:
+                    logger.info(f"下载Markdown结果成功 [{filename}]: {len(dl['markdown_text'])} 字符")
 
                 return {
                     "status": "done",
-                    "json_text": json_text,
-                    "raw_json": raw_json,
-                    "markdown_text": markdown_text,
+                    "json_text": dl["json_text"],
+                    "raw_json": dl["raw_json"],
+                    "markdown_text": dl["markdown_text"],
                     "extracted_pages": extracted_pages,
                     "total_pages": total_pages,
                     "raw_result": data_field,
@@ -408,41 +492,40 @@ class PaddleOCRService:
                             f"耗时={start_time}~{end_time}"
                         )
 
-                        # 下载结果 JSON
-                        json_text = ""
-                        raw_json = None
-                        if json_url:
-                            try:
-                                json_text, raw_json = await self._download_result_json(json_url)
-                                logger.info(
-                                    f"下载JSON结果成功 [{filename}]: {len(json_text)} 字符"
-                                )
-                            except Exception as e:
-                                exc_name = type(e).__name__
-                                logger.error(f"下载JSON结果失败 [{filename}]: [{exc_name}] {e}")
-                                return {
-                                    "success": False,
-                                    "error": f"下载结果失败: {e}",
-                                }
-                        else:
+                        # 性能优化：并发下载 JSON 和 Markdown 结果，共享连接池
+                        dl = await self._download_results_concurrent(
+                            json_url, markdown_url, filename
+                        )
+                        if dl["json_error"]:
+                            exc_name = type(dl["json_error"]).__name__
+                            logger.error(
+                                f"下载JSON结果失败 [{filename}]: [{exc_name}] {dl['json_error']}"
+                            )
+                            return {
+                                "success": False,
+                                "error": f"下载结果失败: {dl['json_error']}",
+                            }
+                        # 区分"URL 为空"和"下载内容为空"两种情况，避免误导排障
+                        if not json_url:
                             logger.warning(f"resultUrl.jsonUrl 为空 [{filename}]")
-
-                        # 尝试下载 Markdown 结果（如果有）
-                        markdown_text = ""
-                        if markdown_url:
-                            try:
-                                markdown_text = await self._download_markdown_result(markdown_url)
-                                logger.info(
-                                    f"下载Markdown结果成功 [{filename}]: {len(markdown_text)} 字符"
-                                )
-                            except Exception as e:
-                                logger.warning(f"下载Markdown结果失败 [{filename}]: {e}")
+                        elif dl["json_text"]:
+                            logger.info(
+                                f"下载JSON结果成功 [{filename}]: {len(dl['json_text'])} 字符"
+                            )
+                        else:
+                            logger.warning(f"下载JSON结果内容为空 [{filename}]")
+                        if dl["markdown_error"]:
+                            logger.warning(f"下载Markdown结果失败 [{filename}]: {dl['markdown_error']}")
+                        elif dl["markdown_text"]:
+                            logger.info(
+                                f"下载Markdown结果成功 [{filename}]: {len(dl['markdown_text'])} 字符"
+                            )
 
                         return {
                             "success": True,
-                            "json_text": json_text,
-                            "raw_json": raw_json,
-                            "markdown_text": markdown_text,
+                            "json_text": dl["json_text"],
+                            "raw_json": dl["raw_json"],
+                            "markdown_text": dl["markdown_text"],
                             "extracted_pages": extracted_pages,
                             "total_pages": total_pages,
                             "raw_result": data_field,
@@ -535,6 +618,8 @@ class PaddleOCRService:
 
         返回: (json_text, parsed_json)
         """
+        # B7: 下载前校验结果 URL，防止 SSRF（指向内网/localhost 等）
+        _validate_result_url(json_url)
         headers = {
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
@@ -560,6 +645,8 @@ class PaddleOCRService:
 
         返回: markdown 文本内容
         """
+        # B7: 下载前校验结果 URL，防止 SSRF（指向内网/localhost 等）
+        _validate_result_url(markdown_url)
         headers = {
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
@@ -570,6 +657,85 @@ class PaddleOCRService:
             if not response.text:
                 logger.warning(f"下载Markdown结果为空 (status={response.status_code})")
             return response.text
+
+    async def _download_results_concurrent(
+        self, json_url: str, markdown_url: str, filename: str = "unknown"
+    ) -> Dict[str, Any]:
+        """性能优化：并发下载 JSON 和 Markdown 结果，共享单个 httpx.AsyncClient 连接池。
+
+        相比分别调用 _download_result_json + _download_markdown_result：
+          1. 两次下载并发执行（耗时从 T_json + T_md 降低到 max(T_json, T_md)）
+          2. 共享连接池，省去一次 TCP/TLS 握手开销
+
+        返回 dict:
+          - json_text / raw_json: JSON 结果（下载失败时为 "", None）
+          - markdown_text: Markdown 结果（下载失败时为 ""）
+          - json_error / markdown_error: 异常对象（成功时为 None）
+        """
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        }
+
+        async def _fetch_json(client: httpx.AsyncClient):
+            if not json_url:
+                return "", None
+            _validate_result_url(json_url)
+            response = await client.get(json_url, headers=headers)
+            response.raise_for_status()
+            text = response.text
+            if not text:
+                logger.warning(f"下载JSON结果为空 (status={response.status_code})")
+                return "", None
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+                logger.info("结果不是标准 JSON，尝试按 JSONL 解析")
+            return text, parsed
+
+        async def _fetch_markdown(client: httpx.AsyncClient):
+            if not markdown_url:
+                return ""
+            _validate_result_url(markdown_url)
+            response = await client.get(markdown_url, headers=headers)
+            response.raise_for_status()
+            if not response.text:
+                logger.warning(f"下载Markdown结果为空 (status={response.status_code})")
+            return response.text
+
+        json_text, raw_json, markdown_text = "", None, ""
+        json_error: Optional[Exception] = None
+        markdown_error: Optional[Exception] = None
+
+        async with httpx.AsyncClient(timeout=TIMEOUT_DOWNLOAD, follow_redirects=True) as client:
+            # 并发下载，return_exceptions=True 确保一个失败不影响另一个
+            results = await asyncio.gather(
+                _fetch_json(client),
+                _fetch_markdown(client),
+                return_exceptions=True,
+            )
+
+            json_result = results[0]
+            md_result = results[1]
+
+            if isinstance(json_result, Exception):
+                json_error = json_result
+            else:
+                json_text, raw_json = json_result
+
+            if isinstance(md_result, Exception):
+                markdown_error = md_result
+            else:
+                markdown_text = md_result
+
+        return {
+            "json_text": json_text,
+            "raw_json": raw_json,
+            "markdown_text": markdown_text,
+            "json_error": json_error,
+            "markdown_error": markdown_error,
+        }
 
     async def batch_get_results(
         self, batch_id: str

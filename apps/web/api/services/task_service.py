@@ -9,7 +9,7 @@ import uuid
 import sqlite3
 import atexit
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Dict, List, Optional
 from datetime import datetime
 from threading import Lock
@@ -25,6 +25,8 @@ DB_PATH = settings.get_output_path() / "processing_history.db"
 
 # task_store 最大条数（超出时 LRU 淘汰）
 _MAX_TASK_STORE = 200
+# 历史记录内存缓存上限（deque maxlen，超出自动淘汰尾部；DB 保留全量）
+_MAX_HISTORY = 200
 # 任务完成后 image_data 自动清理延迟（秒）
 _IMAGE_DATA_CLEANUP_DELAY = 300
 
@@ -63,6 +65,17 @@ def _init_db():
             total_pages INTEGER
         )
     """)
+    # 性能优化：为常用查询字段建立索引
+    # idx_history_timestamp: 加速 ORDER BY timestamp DESC（历史记录加载、分页）
+    # idx_history_file_id:   加速按 file_id 查询（任务关联历史记录）
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_timestamp "
+        "ON history(timestamp DESC)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_history_file_id "
+        "ON history(file_id)"
+    )
     db.commit()
     return db
 
@@ -74,11 +87,17 @@ class TaskService:
         self._lock = Lock()
         # S10: 使用 OrderedDict 实现 LRU 淘汰，限制最大条数
         self._task_store: "OrderedDict[str, dict]" = OrderedDict()
-        self._history: List[dict] = []
-        self._max_history = 200
+        # 性能优化：使用 deque(maxlen=...) 替代 list
+        #   - appendleft() 为 O(1)，而 list.insert(0, item) 为 O(n)
+        #   - maxlen 自动淘汰旧条目，无需手动 pop
+        #   - 引用模块级 _MAX_HISTORY 常量，测试可通过 monkeypatch 调整
+        self._history: "deque[dict]" = deque(maxlen=_MAX_HISTORY)
+        self._max_history = _MAX_HISTORY
         self._db: Optional[sqlite3.Connection] = None
         # S10: image_data 延迟清理定时器
         self._cleanup_timers: Dict[str, threading.Timer] = {}
+        # 并发轮询互斥：防止同一 task_id 被多个请求同时处理
+        self._active_polls: set = set()
         self._init_history_from_db()
 
     # ---- 资源管理 ----
@@ -143,6 +162,25 @@ class TaskService:
             self._task_store.pop(task_id, None)
             self._cancel_cleanup_timer(task_id)
 
+    # ---- 并发轮询互斥 ----
+
+    def try_acquire_poll(self, task_id: str) -> bool:
+        """尝试获取任务的独占轮询权。
+
+        防止同一 task_id 被多个并发请求同时处理（TOCTOU 竞态防护）。
+        返回 True 表示获取成功，False 表示已有其他请求在处理。
+        """
+        with self._lock:
+            if task_id in self._active_polls:
+                return False
+            self._active_polls.add(task_id)
+            return True
+
+    def release_poll(self, task_id: str):
+        """释放任务的独占轮询权。"""
+        with self._lock:
+            self._active_polls.discard(task_id)
+
     # ---- image_data 延迟清理 (S10) ----
 
     def _cancel_cleanup_timer(self, task_id: str):
@@ -166,9 +204,10 @@ class TaskService:
 
         timer = threading.Timer(delay, _cleanup)
         timer.daemon = True
-        # 取消已有的定时器
-        self._cancel_cleanup_timer(task_id)
-        self._cleanup_timers[task_id] = timer
+        # 在锁内取消已有定时器并插入新定时器，确保线程安全
+        with self._lock:
+            self._cancel_cleanup_timer(task_id)
+            self._cleanup_timers[task_id] = timer
         timer.start()
 
     # ---- 处理历史 ----
@@ -212,9 +251,8 @@ class TaskService:
         """
         with self._lock:
             item.setdefault("id", uuid.uuid4().hex[:16])
-            self._history.insert(0, item)
-            if len(self._history) > self._max_history:
-                self._history.pop()
+            # deque.appendleft 为 O(1)，且 maxlen 自动淘汰旧条目
+            self._history.appendleft(item)
 
             # 持久化到 SQLite（M03: 在锁内执行）
             try:
@@ -246,61 +284,101 @@ class TaskService:
     def get_history(self, limit: int = 50, offset: int = 0) -> List[dict]:
         """获取历史记录（最多 limit 条，从 offset 开始）"""
         with self._lock:
-            return self._history[offset:offset + limit]
+            # deque 不支持切片，需先转为 list（maxlen=200，转换开销可忽略）
+            return list(self._history)[offset:offset + limit]
 
     def get_history_count(self) -> int:
+        """获取历史记录总数（以 DB 为准，避免内存 deque maxlen 截断后 count 不一致）"""
         with self._lock:
-            return len(self._history)
+            try:
+                db = self._ensure_db()
+                row = db.execute("SELECT COUNT(*) FROM history").fetchone()
+                return row[0] if row else 0
+            except Exception as e:
+                logger.warning(f"查询历史记录总数失败，回退到内存计数: {e}")
+                return len(self._history)
+
+    def get_history_with_count(self, limit: int = 50, offset: int = 0) -> tuple:
+        """性能优化：一次加锁同时获取分页数据和总数，避免两次锁竞争。
+
+        返回: (items, total)
+        """
+        with self._lock:
+            items = list(self._history)[offset:offset + limit]
+            # total 以 DB 为准（内存 deque 有 maxlen 截断）
+            try:
+                db = self._ensure_db()
+                row = db.execute("SELECT COUNT(*) FROM history").fetchone()
+                total = row[0] if row else len(self._history)
+            except Exception as e:
+                logger.warning(f"查询历史记录总数失败，回退到内存计数: {e}")
+                total = len(self._history)
+            return items, total
 
     def delete_history(self, history_id: str) -> bool:
         """删除指定历史记录（内存 + 数据库）
 
         M03: 数据库操作也纳入锁保护范围。
+        修复：即使内存 deque 已淘汰该记录，仍执行 DB DELETE，避免数据孤岛。
         """
         with self._lock:
-            # 从内存中删除
-            original_len = len(self._history)
-            self._history = [h for h in self._history if h.get("id") != history_id]
-            if len(self._history) == original_len:
-                return False
+            # 从内存中删除（deque 需按索引删除，不能重新赋值列表推导式）
+            found_idx = None
+            for i, h in enumerate(self._history):
+                if h.get("id") == history_id:
+                    found_idx = i
+                    break
+            if found_idx is not None:
+                del self._history[found_idx]
 
             # 从数据库中删除（M03: 在锁内执行）
+            # 即使内存未命中也执行 DB DELETE，避免"内存已淘汰但 DB 仍在"的孤岛
             try:
                 db = self._ensure_db()
-                db.execute("DELETE FROM history WHERE id = ?", (history_id,))
+                cursor = db.execute("DELETE FROM history WHERE id = ?", (history_id,))
                 db.commit()
+                # 以 DB 实际删除行数为准（内存命中但 DB 已删会返回 0）
+                return cursor.rowcount > 0 or found_idx is not None
             except Exception as e:
                 logger.warning(f"从数据库删除历史记录失败: {e}")
-            return True
+                return found_idx is not None
 
     def batch_delete_history(self, history_ids: list[str]) -> int:
         """批量删除历史记录，返回成功删除数量
 
         M09: 使用单条 SQL ``DELETE FROM history WHERE id IN (...)`` 批量删除。
+        修复：即使内存 deque 已淘汰部分记录，仍执行 DB DELETE，避免数据孤岛。
         """
         if not history_ids:
             return 0
 
         with self._lock:
-            # 从内存中删除
+            # 从内存中删除（deque 需按索引删除，倒序删除避免索引错位）
             id_set = set(history_ids)
-            original_len = len(self._history)
-            self._history = [h for h in self._history if h.get("id") not in id_set]
-            deleted_count = original_len - len(self._history)
+            indices_to_remove = [
+                i for i, h in enumerate(self._history) if h.get("id") in id_set
+            ]
+            for i in reversed(indices_to_remove):
+                del self._history[i]
+            in_memory_deleted = len(indices_to_remove)
 
             # M09: 使用单条 SQL 批量删除（在锁内执行）
+            # DB 删除以 cursor.rowcount 为准，覆盖内存已淘汰但 DB 仍在的记录
             try:
                 db = self._ensure_db()
                 placeholders = ",".join("?" * len(history_ids))
-                db.execute(
+                cursor = db.execute(
                     f"DELETE FROM history WHERE id IN ({placeholders})",
                     history_ids,
                 )
                 db.commit()
+                # DB 实际删除数（可能 ≥ 内存删除数，因内存已淘汰部分记录）
+                db_deleted = cursor.rowcount
+                return max(db_deleted, in_memory_deleted)
             except Exception as e:
                 logger.warning(f"批量删除历史记录失败: {e}")
 
-            return deleted_count
+            return in_memory_deleted
 
 
 # 全局单例

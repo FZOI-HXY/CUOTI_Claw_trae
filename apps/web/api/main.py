@@ -1,10 +1,11 @@
 """
-错题管理系统 - FastAPI 后端主服务
+DocFlow — AI智能文档识别与管理系统 - FastAPI 后端主服务
 
 支持的 OCR 模型:
-  - PaddleOCR-VL-1.5 / PaddleOCR-VL（文档结构化分析，推荐）
+  - PaddleOCR-VL-1.6（多模态文档分析，最新推荐）
+  - PaddleOCR-VL-1.5 / PaddleOCR-VL（文档结构化分析）
   - PP-StructureV3（文档结构化分析）
-  - PP-OCRv5（文字识别）
+  - PP-OCRv6 / PP-OCRv5（纯文字识别）
 
 处理流程: 上传 → PaddleOCR API 异步识别 → 轮询结果 → 保存结构化 Markdown
 
@@ -73,9 +74,49 @@ logger = setup_logger("MainServer")
 if getattr(_sys, 'frozen', False):
     logger.info(f"PaddleOCRService 加载模式: {'标准库降级' if _use_standalone else 'httpx'} (frozen)")
 
+# 已知的无效占位符 API URL（启动时自动修正）
+_PLACEHOLDER_URLS = {"new-api.example.com", "example.com", ""}
+_CORRECT_API_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+_CORRECT_MODEL = "PaddleOCR-VL-1.6"
+
+
+def _migrate_stale_config():
+    """启动时检查并修正已知的无效配置值。
+
+    防止 .env 被外部进程覆盖后，服务带着占位符 URL 启动导致 DNS 解析失败。
+    """
+    migrated = []
+    if settings.paddleocr_api_url in _PLACEHOLDER_URLS or "example.com" in settings.paddleocr_api_url:
+        logger.warning(f"检测到无效 API URL: {settings.paddleocr_api_url}，自动修正为官方地址")
+        settings.paddleocr_api_url = _CORRECT_API_URL
+        migrated.append("paddleocr_api_url")
+
+    if settings.paddleocr_model in ("PP-StructureV3", "PP-OCRv5", "PP-OCRv4"):
+        logger.warning(f"检测到旧版模型: {settings.paddleocr_model}，自动升级为 {_CORRECT_MODEL}")
+        settings.paddleocr_model = _CORRECT_MODEL
+        migrated.append("paddleocr_model")
+
+    if settings.log_level and settings.log_level.startswith("LogLevel."):
+        fixed = settings.log_level.replace("LogLevel.", "")
+        logger.warning(f"检测到错误的 LOG_LEVEL 格式: {settings.log_level}，修正为 {fixed}")
+        settings.log_level = fixed
+        migrated.append("log_level")
+
+    if migrated:
+        save_env_file({k: getattr(settings, k) for k in migrated}, ENV_FILE_PATH)
+        logger.info(f"配置自动迁移完成: {', '.join(migrated)}")
+    return migrated
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动时执行安全检查。"""
+    """应用生命周期：启动时执行安全检查和配置迁移。"""
+    migrated = _migrate_stale_config()
+    # 配置迁移后同步更新 paddle_service 实例（模块级初始化时用的是旧值）
+    if migrated:
+        paddle_service.job_url = settings.paddleocr_api_url.rstrip("/")
+        paddle_service.model = settings.paddleocr_model
+        logger.info("paddle_service 实例已同步迁移后的配置")
     if not validate_api_token():
         logger.warning("PaddleOCR API Token 未配置，OCR 功能将不可用。请在系统设置中配置。")
     logger.info(f"速率限制: {settings.rate_limit_requests} 请求/{settings.rate_limit_window}秒")
@@ -85,8 +126,8 @@ async def lifespan(app: FastAPI):
 # I07: 生产环境禁用 docs（仅在 debug 模式下提供文档）
 _is_debug = settings.debug
 app = FastAPI(
-    title="错题管理系统",
-    description="基于 PaddleOCR PP-StructureV3 的智能错题识别与管理系统",
+    title="DocFlow",
+    description="AI智能文档识别与管理系统 — 基于 PaddleOCR 多模态识别",
     version="1.2.0",
     lifespan=lifespan,
     docs_url="/docs" if _is_debug else None,
@@ -94,7 +135,7 @@ app = FastAPI(
     openapi_url="/openapi.json" if _is_debug else None,
 )
 
-# I06: TrustedHost 中间件（仅允许本机访问）
+# I06: TrustedHost 中间件（Cloudflare Tunnel 部署需允许任意 Host 头）
 app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=["127.0.0.1", "localhost", "0.0.0.0", "*"],
@@ -353,7 +394,6 @@ def _check_magic_bytes(content: bytes) -> None:
         b'\x89PNG': "PNG",
         b'BM': "BMP",
         b'GIF8': "GIF",
-        b'RIFF': "WebP/AVI",
         b'%PDF': "PDF",
         b'II*\x00': "TIFF (LE)",
         b'MM\x00*': "TIFF (BE)",
@@ -362,6 +402,11 @@ def _check_magic_bytes(content: bytes) -> None:
     for sig, fmt in magic_signatures.items():
         if content[:len(sig)] == sig:
             return  # 有效格式
+
+    # WebP: RIFF....WEBP（bytes 0-3 = RIFF, bytes 8-11 = WEBP）
+    # 不能仅检查 RIFF，因为 AVI 文件也以 RIFF 开头
+    if len(content) >= 12 and content[:4] == b'RIFF' and content[8:12] == b'WEBP':
+        return  # 有效 WebP 格式
 
     raise HTTPException(
         status_code=400,
@@ -515,7 +560,7 @@ async def root():
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url="/app/", status_code=302)
     return {
-        "name": "错题管理系统",
+        "name": "DocFlow",
         "version": "1.2.0",
         "status": "running",
         "uptime": str(datetime.now() - SYSTEM_START_TIME),
@@ -526,7 +571,7 @@ async def root():
 async def api_info():
     """API 信息端点(原根路径功能)"""
     return {
-        "name": "错题管理系统",
+        "name": "DocFlow",
         "version": "1.2.0",
         "status": "running",
         "uptime": str(datetime.now() - SYSTEM_START_TIME),
@@ -551,18 +596,23 @@ async def health_check():
 
 @app.get("/api/init")
 async def init_token(request: Request):
-    """S06: 返回认证 token（仅限 localhost 访问）
+    """S06: 返回认证 token
 
-    桌面端和 Web 前端通过此端点获取认证 token，
-    后续 POST/DELETE/PUT 请求需在 X-Claw-Token 头中携带此 token。
+    当 CLAW_AUTH_TOKEN 为空时（公网部署/比赛演示），不启用认证，直接返回。
+    当 CLAW_AUTH_TOKEN 非空时（本地桌面端），仅限 localhost 访问。
     """
+    auth_token = settings.claw_auth_token
+    # 未配置 token 时，不启用认证，任何来源都可以访问
+    if not auth_token:
+        return {"token": "", "auth_required": False}
+
+    # 配置了 token 时，仅允许本机访问
     client_ip = request.client.host if request.client else "unknown"
-    # 仅允许本机访问
     if client_ip not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(status_code=403, detail="禁止访问")
     return {
-        "token": settings.claw_auth_token,
-        "auth_required": bool(settings.claw_auth_token),
+        "token": auth_token,
+        "auth_required": True,
     }
 
 
@@ -700,6 +750,13 @@ async def test_paddleocr_connection():
                         "success": False,
                         "error": "API Token 无效或已过期",
                         "detail": f"服务器返回 {response.status_code}，请检查 Token 是否正确",
+                    }
+                # 5xx = 服务器内部错误，连接异常
+                if response.status_code >= 500:
+                    return {
+                        "success": False,
+                        "error": "API 服务器内部错误",
+                        "detail": f"服务器返回 {response.status_code}，请稍后重试或检查 API 地址是否正确",
                     }
                 # 200/400/404 = 服务器可达,Token 有效(400=参数缺失属正常)
                 return {
@@ -1139,25 +1196,32 @@ async def _handle_task_done(task_id: str, task_info: dict, poll_status: dict):
     )
 
     layout_items = extracted.get("layout_items", [])
+    # 性能优化: layout 报告和 JSON dump 互不依赖，并发写入减少延迟
+    post_write_tasks = []
+
     if layout_items:
-        # 同步文件写入 → asyncio.to_thread 避免阻塞事件循环
-        await asyncio.to_thread(
-            markdown_generator.save_layout_report_standalone,
-            report_dir=report_dir,
-            original_filename=task_info["filename"],
-            layout_items=layout_items,
-            layout_image_base64=extracted.get("layout_image"),
-            processing_time=processing_time,
+        post_write_tasks.append(
+            asyncio.to_thread(
+                markdown_generator.save_layout_report_standalone,
+                report_dir=report_dir,
+                original_filename=task_info["filename"],
+                layout_items=layout_items,
+                layout_image_base64=extracted.get("layout_image"),
+                processing_time=processing_time,
+            )
         )
 
     if json_text:
         json_dump_path = Path(report_dir) / "downloaded_result.json"
-        # 同步文件写入 → asyncio.to_thread
         def _write_json_dump(path: Path, text: str):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
-        await asyncio.to_thread(_write_json_dump, json_dump_path, json_text)
-        logger.info(f"原始下载JSON已保存: {json_dump_path}")
+        post_write_tasks.append(asyncio.to_thread(_write_json_dump, json_dump_path, json_text))
+
+    if post_write_tasks:
+        await asyncio.gather(*post_write_tasks)
+        if json_text:
+            logger.info(f"原始下载JSON已保存: {Path(report_dir) / 'downloaded_result.json'}")
 
     result_data = {
         "success": True,
@@ -1533,7 +1597,6 @@ async def download_report_zip(report_id: str):
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(m_file, "report.md")
             included_files.append("report.md")
-            image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
             # 同级目录文件（layout_analysis.png, original.png, layout_report.md, api_response.json 等）
             for file_path in r_dir.iterdir():
                 if file_path.is_file() and file_path.name != "report.md":
@@ -1726,7 +1789,7 @@ async def download_batch_layout_report(request_data: BatchLayoutRequest):
         lines.append("---")
         lines.append("")
 
-    lines.append("*本文档由错题管理系统自动生成 - 批量版面分析报告*")
+    lines.append("*本文档由 DocFlow 自动生成 - 批量版面分析报告*")
     report_content = "\n".join(lines)
     logger.info(f"批量版面分析报告: {len(files)} 个文件, {total_items} 个版面区域")
 
@@ -1752,6 +1815,9 @@ async def get_report_image(report_id: str, image_name: str):
         ".jpeg": "image/jpeg",
         ".gif": "image/gif",
         ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".tiff": "image/tiff",
+        ".tif": "image/tiff",
     }
     suffix = img_path.suffix.lower()
     media_type = content_type_map.get(suffix, "application/octet-stream")
@@ -1794,20 +1860,19 @@ async def batch_delete_reports(request: BatchDeleteRequest):
     if not report_ids:
         raise HTTPException(status_code=400, detail="未提供要删除的报告 ID")
 
-    # 安全校验：过滤掉路径遍历的 ID
-    safe_ids = []
+    # 安全校验：过滤掉路径遍历的 ID，同时缓存已校验的目录路径避免重复校验
+    safe_entries = []  # [(rid, report_dir), ...]
     for rid in report_ids:
         try:
-            _safe_report_dir(rid)
-            safe_ids.append(rid)
+            report_dir = _safe_report_dir(rid)
+            safe_entries.append((rid, report_dir))
         except Exception:
             continue
 
-    if not safe_ids:
+    if not safe_entries:
         raise HTTPException(status_code=400, detail="没有有效的报告 ID")
 
-    async def _delete_one(rid: str) -> dict:
-        report_dir = _safe_report_dir(rid)
+    async def _delete_one(rid: str, report_dir: Path) -> dict:
         try:
             # M32: 使用 asyncio.to_thread 替代弃用的 get_event_loop().run_in_executor
             await asyncio.to_thread(
@@ -1823,13 +1888,13 @@ async def batch_delete_reports(request: BatchDeleteRequest):
             return {"id": rid, "success": False, "error": error_msg}
 
     # 并行执行删除
-    results = await asyncio.gather(*[_delete_one(rid) for rid in safe_ids])
+    results = await asyncio.gather(*[_delete_one(rid, rdir) for rid, rdir in safe_entries])
     deleted_count = sum(1 for r in results if r["success"])
     failed_count = len(results) - deleted_count
 
     return {
         "success": True,
-        "total": len(safe_ids),
+        "total": len(safe_entries),
         "deleted": deleted_count,
         "failed": failed_count,
         "results": results,
@@ -1848,7 +1913,7 @@ if frontend_path.exists():
 # ============ 启动入口 ============
 
 if __name__ == "__main__":
-    logger.info("错题管理系统启动中...")
+    logger.info("DocFlow 启动中...")
     logger.info(f"  - Host: {settings.host}:{settings.port}")
     logger.info(f"  - Upload Dir: {settings.get_upload_path()}")
     logger.info(f"  - Output Dir: {settings.get_output_path()}")

@@ -45,6 +45,7 @@ def api_client(temp_dir, load_backend_app):
     original_upload = settings.upload_dir
     original_output = settings.output_dir
     original_log = settings.log_dir
+    original_claw_token = settings.claw_auth_token
 
     # load_backend_app 完成：settings 三目录设置、api_key 设置、目录创建、
     # importlib 加载 main.py、task_store/_history 清空、_db 关闭
@@ -86,6 +87,7 @@ def api_client(temp_dir, load_backend_app):
     settings.upload_dir = original_upload
     settings.output_dir = original_output
     settings.log_dir = original_log
+    settings.claw_auth_token = original_claw_token
 
 
 @pytest.fixture(scope="function")
@@ -121,7 +123,7 @@ class TestHealthCheck:
             assert resp.status_code == 200
             data = resp.json()
             assert data["status"] == "running"
-            assert data["name"] == "错题管理系统"
+            assert data["name"] == "DocFlow"
 
     def test_health_check(self, api_client):
         """GET /api/health"""
@@ -987,6 +989,33 @@ class TestUploadBatchAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] == 20
+
+    def test_upload_batch_pdf_with_octet_stream(self, api_client):
+        """批量上传：PDF 文件以 application/octet-stream 上传时应通过扩展名回退被接受"""
+        pdf_bytes = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+        resp = api_client.post("/api/upload/batch", files=[
+            ("files", ("doc1.pdf", io.BytesIO(pdf_bytes), "application/octet-stream")),
+            ("files", ("doc2.pdf", io.BytesIO(pdf_bytes), "application/octet-stream")),
+        ])
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 2
+        assert data["succeeded"] == 2
+        assert data["failed"] == 0
+
+    def test_upload_batch_pdf_mixed_with_images(self, api_client, sample_image_bytes):
+        """批量上传：混合 PDF 和图片文件（PDF 使用 octet-stream）应成功处理"""
+        pdf_bytes = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+        resp = api_client.post("/api/upload/batch", files=[
+            ("files", ("image.jpg", io.BytesIO(sample_image_bytes), "image/jpeg")),
+            ("files", ("doc.pdf", io.BytesIO(pdf_bytes), "application/octet-stream")),
+            ("files", ("image2.png", io.BytesIO(sample_image_bytes), "image/png")),
+        ])
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 3
+        assert data["succeeded"] == 3
+        assert data["failed"] == 0
 
 
 @pytest.mark.integration

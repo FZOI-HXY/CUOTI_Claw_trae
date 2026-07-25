@@ -1,5 +1,5 @@
 /* ========================================
-   错题管理系统 - Claw
+   DocFlow — AI智能文档识别与管理系统
    设计方向：工业精准主义
    色彩：深蓝基调 + 琥珀色强调
    ======================================== */
@@ -754,7 +754,7 @@ body {
 .layout-item-index {
     font-family: var(--font-mono);
     font-size: 0.75rem;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     min-width: 28px;
 }
 
@@ -766,7 +766,7 @@ body {
 
 .layout-item-type-en {
     font-size: 0.72rem;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     font-family: var(--font-mono);
 }
 
@@ -981,7 +981,7 @@ body {
     text-align: left;
     font-size: 0.75rem;
     font-weight: 600;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     background: var(--bg-elevated);

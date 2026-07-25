@@ -1,5 +1,5 @@
 """
-Claw 错题管理系统 - 测试运行器
+DocFlow — 测试运行器
 
 功能:
   1. 自动发现并运行所有测试
@@ -97,7 +97,7 @@ body {{ font-family:'Segoe UI','Microsoft YaHei',sans-serif; background:#0f172a;
 <body>
 <div class="container">
   <div class="header">
-    <h1>Claw 错题管理系统 - 测试报告</h1>
+    <h1>DocFlow — 测试报告</h1>
     <div class="subtitle">Generated at {now} | Duration: {duration:.2f}s</div>
     <div class="status">{status_text}</div>
     <div style="color:#94a3b8;font-size:14px;">{passed}/{total} tests passed ({pass_rate:.1f}%)</div>
@@ -155,7 +155,7 @@ body {{ font-family:'Segoe UI','Microsoft YaHei',sans-serif; background:#0f172a;
 def generate_json_report(results, report_path: Path, duration: float):
     """生成 JSON 格式报告"""
     report = {
-        "project": "Claw - 错题管理系统",
+        "project": "DocFlow",
         "timestamp": datetime.now().isoformat(),
         "duration_seconds": round(duration, 2),
         "summary": {
@@ -185,7 +185,7 @@ def print_console_summary(results: dict, duration: float):
 
     print()
     print("=" * 60)
-    print("  Claw 错题管理系统 - 自动化测试报告")
+    print("  DocFlow — 自动化测试报告")
     print("=" * 60)
     print(f"  总用例数: {total}")
     print(f"  通过:     {passed}  OK")

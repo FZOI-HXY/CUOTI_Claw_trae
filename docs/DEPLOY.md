@@ -1,6 +1,89 @@
-# Claw 错题管理系统 - 部署指南
+# DocFlow — AI智能文档识别与管理系统 - 部署指南
 
-## 一、环境准备
+---
+
+## 零、云端部署方案速查
+
+| 方案 | 永久免费 | 需信用卡 | 内存 | 适合场景 | 配置文件 |
+|------|----------|----------|------|----------|----------|
+| **Hugging Face Spaces** | ✅ | ❌ 仅需邮箱 | **2核/16GB** | **⭐ 无信用卡首选** | `Dockerfile.hf` |
+| Fly.io | ✅ | ✅ | 256MB | 有信用卡 | `Dockerfile.fly` + `fly.toml` |
+| Docker Compose | ✅ 自建 | 自备服务器 | 不限 | 自有VPS | `Dockerfile` + `docker-compose.yml` |
+
+---
+
+### 🚀 无信用卡首选：Hugging Face Spaces 部署
+
+**配置：2 vCPU / 16GB RAM / 50GB 磁盘，永久免费，仅需邮箱注册** [$TRAE_REF](http://m.toutiao.com/group/7637034971688862260/)
+
+#### 步骤 1：注册账号
+
+访问 https://huggingface.co/join ，用邮箱注册（**无需信用卡，无需实名认证**）
+
+#### 步骤 2：安装工具并登录
+
+```bash
+# 安装 huggingface_hub CLI
+pip install huggingface_hub
+
+# 登录（会提示输入 Access Token，从 https://huggingface.co/settings/tokens 获取）
+huggingface-cli login
+```
+
+#### 步骤 3：一键部署
+
+```bash
+# Linux/macOS
+chmod +x deploy-hf.sh
+./deploy-hf.sh
+
+# Windows (Git Bash / WSL)
+bash deploy-hf.sh
+```
+
+或手动部署：
+```bash
+# 1. 创建 Space（在网页操作或命令行）
+huggingface-cli repo create docflow-ai --type space --space_sdk docker
+
+# 2. 准备文件并推送
+mkdir hf_deploy && cd hf_deploy
+cp ../Dockerfile.hf ./Dockerfile
+cp -r ../apps ./
+cp ../README.md ./
+cp ../deploy/hf-spaces/README.md ./README.md  # 覆盖（含 Spaces 元数据）
+mkdir -p data/uploads data/output data/logs
+git init && git add . && git commit -m "deploy"
+git remote add origin https://huggingface.co/spaces/<你的用户名>/docflow-ai
+git push --force origin main
+```
+
+#### 步骤 4：配置 API Key
+
+1. 打开 Space 设置页：`https://huggingface.co/spaces/<用户名>/docflow-ai/settings`
+2. 在 **Repository secrets** 中添加：
+   - `PADDLEOCR_API_KEY` = 你的百度PaddleOCR Token
+3. Space 自动重启后即可使用
+
+#### 访问地址
+
+```
+https://huggingface.co/spaces/<你的用户名>/docflow-ai
+```
+
+> ⚠️ **注意**：HF Spaces 免费版有 48 小时休眠机制（无访问时自动休眠，首次访问需冷启动约 30-60 秒）。用于参赛 Demo 展示完全够用。
+
+---
+
+### 有信用卡方案
+
+- **Fly.io**（256MB永久免费，不休眠）：见 `deploy-fly.sh`
+- **Oracle Cloud**（4核24GB ARM永久免费）：使用根目录 `Dockerfile` + `docker-compose.yml`
+- **阿里云/腾讯云**（新用户1-3个月试用）：国内节点，需备案
+
+---
+
+## 一、环境准备（本地部署）
 
 ### 系统要求
 

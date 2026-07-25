@@ -1,0 +1,97 @@
+# ======================================================
+# Claw 错题管理系统 - .dockerignore
+# 排除不需要进入镜像的文件，减小镜像体积、加速构建
+# ======================================================
+
+# ── 版本控制 ──
+.git/
+.gitignore
+.github/
+
+# ── Python 缓存与虚拟环境 ──
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+venv/
+.venv/
+env/
+ENV/
+
+# ── IDE / 编辑器 ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── PyInstaller 桌面端构建产物（Web 部署不需要） ──
+apps/desktop/dist/
+apps/desktop/build/
+apps/desktop/*.spec
+apps/desktop/app_icon.ico
+apps/desktop/Claw.exe
+apps/desktop/Claw_build.log
+
+# ── 测试相关 ──
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+reports/
+
+# ── 运行时数据（由卷挂载，不入镜像） ──
+data/uploads/*
+data/output/*
+data/logs/*
+apps/web/api/uploads/*
+apps/web/api/output/*
+apps/web/api/logs/*
+apps/desktop/dist/logs/
+apps/desktop/dist/output/
+apps/desktop/dist/uploads/
+
+# ── 敏感配置（通过环境变量或卷注入） ──
+.env
+.env.local
+.env.production
+*.env.local
+apps/web/api/.env
+apps/desktop/nas_config.json
+
+# ── 日志文件 ──
+logs/*.log
+**/*.log
+
+# ── 临时与备份文件 ──
+*.tmp
+*.temp
+*.bak
+*.cache
+tmp/
+temp/
+~$*
+
+# ── 文档（可选保留，若需要可在 Dockerfile 中单独 COPY） ──
+docs/
+*.md
+!README.md
+
+# ── 操作系统文件 ──
+Desktop.ini
+$RECYCLEBIN/
+
+# ── Docker 自身文件（避免递归） ──
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# ── Node 相关（如果后续加前端构建） ──
+node_modules/
+npm-debug.log*

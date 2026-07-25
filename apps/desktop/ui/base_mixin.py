@@ -114,6 +114,8 @@ class AppBaseMixin:
         seen = set()
         for url in urls:
             path = url.toLocalFile()
+            if not path:
+                continue
             p = Path(path)
             if p.is_file():
                 path_str = str(p)
@@ -135,7 +137,10 @@ class AppBaseMixin:
     # ============ 步骤指示器 ============
 
     def _reset_steps(self):
-        for lbl in self.step_labels.values():
+        # 同时重置文本和样式：_set_step_complete 会把文本改为 "✓ xxx"，需还原
+        orig_names = {"upload": "上传文件", "analyze": "模型识别", "report": "生成报告"}
+        for key, lbl in self.step_labels.items():
+            lbl.setText(orig_names.get(key, ""))
             lbl.setStyleSheet("color: #4b5563; font-size: 12px; padding: 4px 12px;")
 
     def _set_step_active(self, step_key: str):
@@ -193,9 +198,9 @@ class AppBaseMixin:
     def show_about(self):
         QMessageBox.about(
             self,  # type: ignore[arg-type]
-            "关于 Claw",
-            "<h2>Claw 错题管理系统 v1.3.0</h2>"
-            "<p>基于 PaddleOCR 的智能错题识别与管理系统</p>"
+            "关于 DocFlow",
+            "<h2>DocFlow v1.3.0</h2>"
+            "<p>基于 PaddleOCR 的智能文档识别与管理系统</p>"
             "<p>独立桌面应用程序 - API Token 已内置，开箱即用</p><hr>"
             "<p>功能：拖拽/批量上传 → PaddleOCR-VL 文档结构化分析 → 报告自动生成</p>"
             "<p>技术栈：PyQt6 + httpx + PaddleOCR API</p>"

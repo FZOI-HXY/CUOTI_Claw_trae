@@ -1,5 +1,5 @@
 """
-错题管理系统 - 独立桌面应用程序
+DocFlow — 独立桌面应用程序
 完整复刻前端系统所有功能，内嵌后端服务，不依赖外部进程
 
 功能:
@@ -115,7 +115,7 @@ class StandaloneApp(
     # ============ UI 搭建 ============
 
     def setup_ui(self):
-        self.setWindowTitle("Claw - 错题管理系统")
+        self.setWindowTitle("DocFlow — 智能文档识别")
         self.setMinimumSize(1280, 800)
         self.resize(1400, 880)
         self.setAcceptDrops(True)
@@ -130,7 +130,7 @@ class StandaloneApp(
 
         # 标题栏
         title_layout = QHBoxLayout()
-        title = QLabel("Claw 错题管理系统")
+        title = QLabel("DocFlow")
         title.setStyleSheet("font-size: 20px; font-weight: 700; color: #f59e0b;")
         title_layout.addWidget(title)
         title_layout.addStretch()

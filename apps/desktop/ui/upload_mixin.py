@@ -242,6 +242,14 @@ class UploadTabMixin:
 
         added = 0
         skipped = 0
+
+        # 添加新文件前，自动清除已完成/失败的旧队列项，避免新旧混杂
+        had_stale = any(q["status"] in ("done", "error") for q in self.file_queue)
+        if had_stale:
+            self.file_queue = [q for q in self.file_queue if q["status"] not in ("done", "error")]
+            self.batch_results.clear()
+            self.render_queue()
+
         for path in paths:
             p = Path(path)
             if not p.is_file():

@@ -1,0 +1,86 @@
+# ======================================================
+# Claw 错题管理系统 - Fly.io 专用 Dockerfile
+# 针对免费层 256MB 内存优化：最小镜像 + 轻量依赖
+# ======================================================
+
+# ---------- 阶段 1: 依赖构建 ----------
+FROM python:3.13-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /build
+
+COPY apps/web/api/requirements.txt ./requirements.txt
+
+# 安装依赖（不含缓存，减小体积）
+RUN pip install --upgrade pip --no-cache-dir && \
+    pip install --prefix=/install --no-cache-dir -r requirements.txt
+
+# ---------- 阶段 2: 运行时镜像 ----------
+FROM python:3.13-slim AS runtime
+
+LABEL maintainer="Claw Team" \
+      description="Claw 错题管理系统 - Fly.io 优化版" \
+      version="1.2.0"
+
+# 运行时环境变量
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Shanghai \
+    HOST=0.0.0.0 \
+    PORT=8500 \
+    DEBUG=false \
+    LOG_LEVEL=INFO
+
+# 仅安装运行时必需的系统依赖（最小化）
+#   - curl: 健康检查
+#   - ca-certificates: HTTPS 出站
+#   - tzdata: 时区
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        tzdata && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# 复制 Python 依赖
+COPY --from=builder /install /usr/local
+
+# 创建非 root 用户（UID 1000 确保容器兼容性）
+RUN groupadd --gid 1000 claw && \
+    useradd -m -u 1000 -g claw -d /home/claw claw
+
+ENV HOME=/home/claw \
+    PATH=/home/claw/.local/bin:$PATH
+
+WORKDIR /app
+
+# 复制项目代码（.dockerignore 已排除不需要的文件）
+COPY --chown=claw:claw . /app
+
+# 创建数据目录（Fly.io 卷会挂载到 /app/data）
+RUN mkdir -p /app/data/uploads /app/data/output /app/data/logs && \
+    chown -R claw:claw /app/data
+
+USER claw
+
+EXPOSE 8500
+
+# Fly.io 健康检查（fly.toml 中已配置，此处保留 Docker 原生健康检查作为备用）
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fs http://127.0.0.1:${PORT}/api/health || exit 1
+
+# 数据目录指向持久化卷
+ENV CLAW_DATA_DIR=/app/data
+
+# 启动命令
+# workers=1：256MB 内存下避免多进程 OOM
+# no-access-log：减少日志输出，节省内存和磁盘
+CMD ["python", "-m", "uvicorn", "apps.web.api.main:app", \
+     "--host", "0.0.0.0", "--port", "8500", \
+     "--workers", "1", "--log-level", "warning", "--no-access-log"]

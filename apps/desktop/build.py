@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Claw 错题管理系统 — PyInstaller 打包构建脚本
+DocFlow — PyInstaller 打包构建脚本
 
 功能:
   1. 自动检查依赖环境 (PyInstaller, PyQt6, httpx, Pillow)

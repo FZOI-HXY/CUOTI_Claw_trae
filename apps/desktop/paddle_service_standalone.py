@@ -21,6 +21,8 @@ import uuid
 import urllib.request
 import urllib.error
 import socket
+import ipaddress
+from urllib.parse import urlparse
 from typing import Optional, Dict, Any
 
 from apps.web.api.logger import setup_logger
@@ -28,6 +30,80 @@ from apps.web.api.config import settings
 from apps.web.api.services.paddle_parser import extract_ocr_result
 
 logger = setup_logger("PaddleOCRService")
+
+
+# ---------------------------------------------------------------------------
+# SSRF 防护（与 paddle_service.py 中 _validate_result_url 逻辑保持一致）
+# ---------------------------------------------------------------------------
+
+class ResultUrlValidationError(ValueError):
+    """结果 URL 校验失败（SSRF 防护）"""
+
+
+def _is_internal_ip(host: str) -> bool:
+    """判断主机名是否为内网地址或 localhost
+
+    同时检查主机名本身是否为内网 IP，以及域名解析后的 IP 是否为内网地址，
+    防止攻击者使用解析到内网 IP 的域名绕过 SSRF 防护。
+    """
+    if not host:
+        return True
+    if host in ("localhost",):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        pass
+
+    try:
+        ips = socket.getaddrinfo(host, None, socket.AF_INET)
+        for _, _, _, _, (ip_addr, _) in ips:
+            ip = ipaddress.ip_address(ip_addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return True
+    except (socket.gaierror, ValueError):
+        pass
+
+    try:
+        ips = socket.getaddrinfo(host, None, socket.AF_INET6)
+        for _, _, _, _, (ip_addr, _, _, _) in ips:
+            ip = ipaddress.ip_address(ip_addr)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return True
+    except (socket.gaierror, ValueError):
+        pass
+
+    return False
+
+
+def _validate_result_url(url: str) -> None:
+    """校验 PaddleOCR API 返回的结果 URL，防止 SSRF 攻击
+
+    校验规则:
+      1. URL 非空，且必须以 http:// 或 https:// 开头
+      2. 主机名不能为空
+      3. 拒绝 localhost 和内网 IP（含解析后指向内网的域名）
+    """
+    if not url:
+        raise ResultUrlValidationError("结果 URL 为空")
+    if not (url.startswith("https://") or url.startswith("http://")):
+        raise ResultUrlValidationError(
+            f"结果 URL 必须使用 http(s) 协议: {url[:80]}..."
+        )
+    try:
+        parsed = urlparse(url)
+    except Exception as e:
+        raise ResultUrlValidationError(f"结果 URL 解析失败: {e}")
+    host = parsed.hostname or ""
+    if not host:
+        raise ResultUrlValidationError(
+            f"结果 URL 主机名无效: {url[:80]}..."
+        )
+    if _is_internal_ip(host):
+        raise ResultUrlValidationError(
+            f"结果 URL 不允许指向内网地址或 localhost: {url[:80]}..."
+        )
 
 # 模型分组
 VL_MODELS = {"PaddleOCR-VL-1.6", "PaddleOCR-VL-1.5", "PaddleOCR-VL"}
@@ -82,7 +158,7 @@ class PaddleOCRService:
     # ------------------------------------------------------------------
 
     def _build_headers(self, content_type: Optional[str] = None) -> Dict[str, str]:
-        headers = {"Authorization": f"bearer {self.token}"}
+        headers = {"Authorization": f"Bearer {self.token}"}
         if content_type:
             headers["Content-Type"] = content_type
         return headers
@@ -109,7 +185,8 @@ class PaddleOCRService:
 
     def _parse_error(self, result: Dict[str, Any]) -> str:
         code = result.get("code")
-        if code and code in ERROR_CODE_MAP:
+        # 使用 `code is not None` 而非 `code`，避免 code=0 时被 falsy 短路
+        if code is not None and code in ERROR_CODE_MAP:
             return f"[{code}] {ERROR_CODE_MAP[code]}"
         return result.get("errorMsg") or result.get("message") or f"未知错误 (code={code})"
 
@@ -570,6 +647,12 @@ class PaddleOCRService:
 
     async def _download_result_json(self, json_url: str) -> tuple:
         """下载结果 JSON 文件 → (json_text, parsed_json)"""
+        # SSRF 防护：校验结果 URL，防止指向内网资源
+        try:
+            _validate_result_url(json_url)
+        except ResultUrlValidationError as e:
+            logger.warning(f"JSON结果URL校验失败: {e}")
+            return "", None
         headers = {
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
@@ -597,6 +680,12 @@ class PaddleOCRService:
 
     async def _download_markdown_result(self, markdown_url: str) -> str:
         """下载 Markdown 结果文件"""
+        # SSRF 防护：校验结果 URL，防止指向内网资源
+        try:
+            _validate_result_url(markdown_url)
+        except ResultUrlValidationError as e:
+            logger.warning(f"Markdown结果URL校验失败: {e}")
+            return ""
         headers = {
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
