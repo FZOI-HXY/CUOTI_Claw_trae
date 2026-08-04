@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["core", "src-tauri"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+rust-version = "1.77"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

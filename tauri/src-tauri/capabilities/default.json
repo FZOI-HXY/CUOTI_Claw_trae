@@ -1,0 +1,12 @@
+{
+  "identifier": "default",
+  "description": "默认能力：核心窗口与文件访问",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:default"
+  ]
+}

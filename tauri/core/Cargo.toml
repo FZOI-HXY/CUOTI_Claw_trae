@@ -1,0 +1,27 @@
+[package]
+name = "cuoti-core"
+version.workspace = true
+edition.workspace = true
+description = "错题管理核心逻辑：SQLite 数据层 + PaddleOCR 服务 + LLM 清洗"
+
+# 核心库不依赖 Tauri，可在纯 Rust 环境编译与测试
+[lib]
+name = "cuoti_core"
+path = "src/lib.rs"
+
+[dependencies]
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+thiserror = "2"
+url = "2"
+futures = "0.3"
+regex = "1"
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
