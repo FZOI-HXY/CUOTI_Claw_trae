@@ -47,23 +47,23 @@ onMounted(load);
       <!-- 概览卡片 -->
       <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
         <div class="bg-white rounded-xl p-4 shadow-sm text-center">
-          <div class="text-3xl font-bold text-brand-600">{{ stats.total }}</div>
+          <div class="text-3xl font-bold text-brand-600 tabular-nums">{{ stats.total }}</div>
           <div class="text-sm text-gray-500 mt-1">总错题</div>
         </div>
         <div class="bg-white rounded-xl p-4 shadow-sm text-center">
-          <div class="text-3xl font-bold text-green-500">{{ stats.mastered }}</div>
+          <div class="text-3xl font-bold text-green-500 tabular-nums">{{ stats.mastered }}</div>
           <div class="text-sm text-gray-500 mt-1">已掌握</div>
         </div>
         <div class="bg-white rounded-xl p-4 shadow-sm text-center">
-          <div class="text-3xl font-bold text-yellow-500">{{ stats.need_review }}</div>
+          <div class="text-3xl font-bold text-yellow-500 tabular-nums">{{ stats.need_review }}</div>
           <div class="text-sm text-gray-500 mt-1">需复习</div>
         </div>
         <div class="bg-white rounded-xl p-4 shadow-sm text-center">
-          <div class="text-3xl font-bold text-red-500">{{ stats.not_mastered }}</div>
+          <div class="text-3xl font-bold text-red-500 tabular-nums">{{ stats.not_mastered }}</div>
           <div class="text-sm text-gray-500 mt-1">未掌握</div>
         </div>
         <div class="bg-white rounded-xl p-4 shadow-sm text-center">
-          <div class="text-3xl font-bold text-yellow-400">{{ stats.favorite }}</div>
+          <div class="text-3xl font-bold text-yellow-400 tabular-nums">{{ stats.favorite }}</div>
           <div class="text-sm text-gray-500 mt-1">收藏</div>
         </div>
       </div>
@@ -72,7 +72,7 @@ onMounted(load);
       <div class="bg-white rounded-xl p-6 shadow-sm mb-6">
         <div class="flex items-center justify-between mb-2">
           <h2 class="font-semibold">总体掌握率</h2>
-          <span class="text-brand-600 font-bold">{{ masteryRate }}%</span>
+          <span class="text-brand-600 font-bold tabular-nums">{{ masteryRate }}%</span>
         </div>
         <div class="h-3 bg-gray-100 rounded-full overflow-hidden">
           <div
@@ -90,7 +90,7 @@ onMounted(load);
           <div v-for="s in stats.by_subject" :key="s.subject_id">
             <div class="flex justify-between text-sm mb-1">
               <span>{{ s.subject_name }}</span>
-              <span class="text-gray-500">{{ s.mastered }}/{{ s.total }} 已掌握</span>
+              <span class="text-gray-500 tabular-nums">{{ s.mastered }}/{{ s.total }} 已掌握</span>
             </div>
             <div class="h-2 bg-gray-100 rounded-full overflow-hidden">
               <div
@@ -113,7 +113,7 @@ onMounted(load);
             class="flex justify-between text-sm"
           >
             <span>{{ c.chapter_name }}</span>
-            <span class="text-gray-500">{{ c.total }} 题</span>
+            <span class="text-gray-500 tabular-nums">{{ c.total }} 题</span>
           </div>
         </div>
       </div>
@@ -126,7 +126,7 @@ onMounted(load);
           <div v-for="t in stats.by_type" :key="t.qtype">
             <div class="flex justify-between text-sm mb-1">
               <span>{{ typeLabels[t.qtype] || t.qtype }}</span>
-              <span class="text-gray-500">{{ t.total }} 题</span>
+              <span class="text-gray-500 tabular-nums">{{ t.total }} 题</span>
             </div>
             <div class="h-2 bg-gray-100 rounded-full overflow-hidden">
               <div

@@ -7,6 +7,8 @@ const queue = ref<Question[]>([]);
 const index = ref(0);
 const showAnswer = ref(false);
 const loading = ref(false);
+// 选项缓存：一次解析，避免每次渲染重复 JSON.parse
+const optionsCache = new Map<number, string[]>();
 
 const typeLabels: Record<string, string> = {
   single: "单选",
@@ -17,17 +19,27 @@ const typeLabels: Record<string, string> = {
 };
 
 function parseOptions(q: Question): string[] {
+  if (optionsCache.has(q.id)) return optionsCache.get(q.id)!;
+  let parsed: string[];
   try {
-    return q.options ? JSON.parse(q.options) : [];
+    parsed = q.options ? JSON.parse(q.options) : [];
   } catch {
-    return [];
+    parsed = [];
   }
+  optionsCache.set(q.id, parsed);
+  return parsed;
 }
 
 async function load() {
   loading.value = true;
   try {
     queue.value = await api.reviewQueue(50);
+    // 预解析所有选项
+    optionsCache.clear();
+    for (const q of queue.value) {
+      // 预热缓存
+      parseOptions(q);
+    }
     index.value = 0;
     showAnswer.value = false;
   } finally {

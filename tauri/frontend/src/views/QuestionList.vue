@@ -134,11 +134,11 @@ onMounted(() => {
       暂无错题，点击「新增错题」开始记录
     </div>
     <div v-else class="space-y-3">
-      <div
+      <RouterLink
         v-for="q in questions"
         :key="q.id"
-        class="bg-white rounded-xl shadow-sm p-4 hover:shadow-md transition cursor-pointer"
-        @click="router.push(`/questions/${q.id}/edit`)"
+        :to="`/questions/${q.id}/edit`"
+        class="block bg-white rounded-xl shadow-sm p-4 hover:shadow-md transition cursor-pointer"
       >
         <div class="flex items-start justify-between gap-3">
           <div class="flex-1">
@@ -175,6 +175,7 @@ onMounted(() => {
             <button
               class="text-xl"
               :class="q.is_favorite ? 'text-yellow-400' : 'text-gray-300'"
+              :aria-label="q.is_favorite ? '取消收藏' : '收藏'"
               :title="q.is_favorite ? '取消收藏' : '收藏'"
               @click.stop="onToggleFavorite(q)"
             >
@@ -188,7 +189,7 @@ onMounted(() => {
             </button>
           </div>
         </div>
-      </div>
+      </RouterLink>
     </div>
   </div>
 </template>

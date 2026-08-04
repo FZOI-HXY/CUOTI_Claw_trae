@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { useRouter, useRoute } from "vue-router";
+import { onMounted, ref, watch } from "vue";
+import { useRouter, useRoute, onBeforeRouteLeave } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
 import * as api from "../lib/api";
@@ -41,6 +41,19 @@ const optionsText = ref("");
 const ocrText = ref("");
 const ocrLoading = ref(false);
 const saving = ref(false);
+const dirty = ref(false);
+
+// 标记表单已修改，用于离开前提示未保存变更
+watch([form, tagsInput, optionsText], () => {
+  if (!saving.value) dirty.value = true;
+}, { deep: true });
+
+onBeforeRouteLeave(() => {
+  if (dirty.value && !saving.value) {
+    return confirm("有未保存的更改，确定离开该页面吗？");
+  }
+  return true;
+});
 
 const difficultyOptions = [
   { value: 1, label: "1（最简单）" },
@@ -109,6 +122,7 @@ async function submit() {
     } else {
       await api.updateQuestion(id!, form.value);
     }
+    dirty.value = false;
     router.push("/questions");
   } catch (e) {
     alert(`保存失败: ${e}`);
@@ -265,7 +279,7 @@ onMounted(async () => {
           class="px-2 py-1 bg-gray-100 rounded text-sm flex items-center gap-1"
         >
           {{ tag }}
-          <button class="text-gray-400 hover:text-red-500" @click="removeTag(i)">×</button>
+          <button class="text-gray-400 hover:text-red-500" :aria-label="`移除标签 ${tag}`" @click="removeTag(i)">×</button>
         </span>
       </div>
       <input
