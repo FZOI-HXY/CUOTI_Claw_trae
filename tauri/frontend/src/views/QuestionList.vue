@@ -12,6 +12,8 @@ const questions = ref<Question[]>([]);
 const loading = ref(false);
 const filter = ref<QuestionFilter>({});
 const keyword = ref("");
+// 选项缓存：一次解析，避免每次渲染重复 JSON.parse
+const optionsCache = new Map<number, string[]>();
 
 const typeLabels: Record<string, string> = {
   single: "单选",
@@ -31,27 +33,46 @@ async function load() {
   try {
     filter.value.keyword = keyword.value || null;
     questions.value = await api.listQuestions(filter.value);
+    // 预解析选项，供模板直接读取
+    optionsCache.clear();
+    for (const q of questions.value) {
+      optionsCache.set(q.id, parseOptions(q.options));
+    }
   } finally {
     loading.value = false;
   }
 }
 
+function parseOptions(options: string | null): string[] {
+  if (!options) return [];
+  try {
+    return JSON.parse(options);
+  } catch {
+    return [];
+  }
+}
+
+function optionsOf(q: Question): string[] {
+  return optionsCache.get(q.id) ?? [];
+}
+
 async function onToggleFavorite(q: Question) {
   await api.toggleFavorite(q.id);
-  await load();
+  // 局部更新：只修改当前项的收藏状态，避免全量重拉
+  const index = questions.value.findIndex(item => item.id === q.id);
+  if (index !== -1) {
+    questions.value[index].is_favorite = !questions.value[index].is_favorite;
+  }
 }
 
 async function onDelete(q: Question) {
   if (!confirm(`确定删除该错题？\n${q.title}`)) return;
   await api.deleteQuestion(q.id);
-  await load();
-}
-
-function parseOptions(q: Question): string[] {
-  try {
-    return q.options ? JSON.parse(q.options) : [];
-  } catch {
-    return [];
+  // 局部更新：直接从列表中移除，避免全量重拉
+  const index = questions.value.findIndex(item => item.id === q.id);
+  if (index !== -1) {
+    optionsCache.delete(q.id);
+    questions.value.splice(index, 1);
   }
 }
 
@@ -141,8 +162,8 @@ onMounted(() => {
               <span v-if="q.chapter_name" class="text-xs text-gray-400">{{ q.chapter_name }}</span>
             </div>
             <div class="font-medium line-clamp-2">{{ q.title }}</div>
-            <div v-if="parseOptions(q).length" class="text-sm text-gray-500 mt-1">
-              <span v-for="opt in parseOptions(q)" :key="opt" class="mr-3">{{ opt }}</span>
+            <div v-if="optionsOf(q).length" class="text-sm text-gray-500 mt-1">
+              <span v-for="opt in optionsOf(q)" :key="opt" class="mr-3">{{ opt }}</span>
             </div>
             <div class="text-xs text-gray-400 mt-2 flex items-center gap-3">
               <span>难度 {{ q.difficulty }}</span>

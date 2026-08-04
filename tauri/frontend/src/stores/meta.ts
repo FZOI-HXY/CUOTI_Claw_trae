@@ -26,9 +26,8 @@ export const useMetaStore = defineStore("meta", () => {
     loading.value = true;
     try {
       await Promise.all([loadSubjects(), loadTags()]);
-      for (const s of subjects.value) {
-        await loadChapters(s.id);
-      }
+      // 并行加载各科目章节，避免串行 IPC
+      await Promise.all(subjects.value.map((s) => loadChapters(s.id)));
     } finally {
       loading.value = false;
     }

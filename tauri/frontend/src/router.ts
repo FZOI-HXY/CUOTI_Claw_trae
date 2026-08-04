@@ -1,9 +1,12 @@
 import { createRouter, createWebHashHistory } from "vue-router";
-import QuestionList from "./views/QuestionList.vue";
-import QuestionDetail from "./views/QuestionDetail.vue";
-import Review from "./views/Review.vue";
-import Statistics from "./views/Statistics.vue";
-import Settings from "./views/Settings.vue";
+import { defineAsyncComponent } from "vue";
+
+// 路由级懒加载：首屏只加载当前页面组件
+const QuestionList = defineAsyncComponent(() => import("./views/QuestionList.vue"));
+const QuestionDetail = defineAsyncComponent(() => import("./views/QuestionDetail.vue"));
+const Review = defineAsyncComponent(() => import("./views/Review.vue"));
+const Statistics = defineAsyncComponent(() => import("./views/Statistics.vue"));
+const Settings = defineAsyncComponent(() => import("./views/Settings.vue"));
 
 const router = createRouter({
   history: createWebHashHistory(),
