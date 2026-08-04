@@ -107,6 +107,13 @@ commit_diff.txt
 Desktop.ini
 $RECYCLE.BIN/
 
+# ── Tauri 前端 ──
+node_modules/
+tauri/frontend/node_modules/
+tauri/frontend/dist/
+tauri/target/
+target/
+
 # ── 其他 ──
 *.wpr
 *.wpu
