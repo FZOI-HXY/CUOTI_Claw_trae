@@ -242,6 +242,8 @@ def _secure_filename(filename: str) -> str:
     safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', safe)
     # 移除开头的点和空格（防止隐藏文件名攻击）
     safe = safe.lstrip('. ')
+    # 移除路径穿越标记（..），防止反斜杠归一化后残留的穿越片段
+    safe = safe.replace("..", "_")
     # 限制长度
     if len(safe) > 255:
         p = Path(safe)
@@ -254,10 +256,14 @@ def _secure_filename(filename: str) -> str:
 def _extract_safe_extension(filename: str) -> str:
     """从文件名中安全提取扩展名，防止路径穿越。
 
-    使用 _secure_filename 先清洗文件名，再提取后缀。
+    先取纯文件名并归一化反斜杠，再提取后缀，避免路径分隔符
+    干扰扩展名判断，同时保留以点结尾的真实后缀行为。
     """
-    safe_name = _secure_filename(filename)
-    ext = Path(safe_name).suffix or ".png"
+    base = Path(filename).name
+    # 归一化反斜杠（Windows 风格路径在 POSIX 下视为普通字符）
+    base = base.replace("\\", "/")
+    base = Path(base).name
+    ext = Path(base).suffix or ".png"
     # 确保扩展名只包含字母数字
     ext = re.sub(r'[^a-zA-Z0-9.]', '', ext)
     return ext if ext.startswith('.') else '.png'
@@ -486,6 +492,9 @@ def _safe_report_dir(report_id: str) -> Path:
     """
     if not report_id:
         raise HTTPException(status_code=400, detail="无效的报告 ID")
+    # 归一化反斜杠为路径分隔符，防止 Windows 风格路径（如 ..\windows）在
+    # POSIX 下被当作字面文件名组件从而绕过路径穿越校验
+    report_id = report_id.replace("\\", "/")
     output_dir = settings.get_output_path().resolve()
     report_dir = (output_dir / report_id).resolve()
     # 确保解析后路径仍在 output_dir 内

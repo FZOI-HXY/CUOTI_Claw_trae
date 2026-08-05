@@ -9,6 +9,9 @@ use cuoti_core::db;
 use cuoti_core::meta;
 use tauri::{Manager, State};
 
+/// API Key 返回前端时的掩码占位符
+const API_KEY_MASK: &str = "********";
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -266,40 +269,77 @@ async fn get_stats(state: State<'_, AppState>) -> Result<cuoti_core::models::Sta
 
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<Vec<cuoti_core::models::ConfigItem>, String> {
-    config::get_all(&state).await.map_err(|e| e.to_string())
+    let mut items = config::get_all(&state).await.map_err(|e| e.to_string())?;
+    // 对前端掩码 API Key，避免明文回传
+    for it in items.iter_mut() {
+        if matches!(it.key.as_str(), "ocr_api_key" | "llm_api_key") && !it.value.is_empty() {
+            it.value = API_KEY_MASK.to_string();
+        }
+    }
+    Ok(items)
 }
 
 #[tauri::command]
 async fn set_config(
     state: State<'_, AppState>,
-    items: Vec<cuoti_core::models::ConfigItem>,
+    mut items: Vec<cuoti_core::models::ConfigItem>,
 ) -> Result<(), String> {
+    // 掩码或空值视为不变更，保留原 key
+    for it in items.iter_mut() {
+        if matches!(it.key.as_str(), "ocr_api_key" | "llm_api_key")
+            && (it.value.is_empty() || it.value == API_KEY_MASK)
+        {
+            if let Some(cur) = config::get(&state, &it.key).await {
+                it.value = cur;
+            }
+        }
+    }
     config::set_all(&state, items).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_ocr_config(state: State<'_, AppState>) -> Result<cuoti_core::models::OcrConfig, String> {
-    config::get_ocr_config(&state).await.map_err(|e| e.to_string())
+    let mut cfg = config::get_ocr_config(&state).await.map_err(|e| e.to_string())?;
+    if !cfg.api_key.is_empty() {
+        cfg.api_key = API_KEY_MASK.to_string();
+    }
+    Ok(cfg)
 }
 
 #[tauri::command]
 async fn set_ocr_config(
     state: State<'_, AppState>,
-    cfg: cuoti_core::models::OcrConfig,
+    mut cfg: cuoti_core::models::OcrConfig,
 ) -> Result<(), String> {
+    // 掩码或空值视为不变更，保留原 key
+    if cfg.api_key.is_empty() || cfg.api_key == API_KEY_MASK {
+        if let Ok(cur) = config::get_ocr_config(&state).await {
+            cfg.api_key = cur.api_key;
+        }
+    }
     config::set_ocr_config(&state, cfg).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_llm_config(state: State<'_, AppState>) -> Result<cuoti_core::models::LlmConfig, String> {
-    config::get_llm_config(&state).await.map_err(|e| e.to_string())
+    let mut cfg = config::get_llm_config(&state).await.map_err(|e| e.to_string())?;
+    if !cfg.api_key.is_empty() {
+        cfg.api_key = API_KEY_MASK.to_string();
+    }
+    Ok(cfg)
 }
 
 #[tauri::command]
 async fn set_llm_config(
     state: State<'_, AppState>,
-    cfg: cuoti_core::models::LlmConfig,
+    mut cfg: cuoti_core::models::LlmConfig,
 ) -> Result<(), String> {
+    // 掩码或空值视为不变更，保留原 key
+    if cfg.api_key.is_empty() || cfg.api_key == API_KEY_MASK {
+        if let Ok(cur) = config::get_llm_config(&state).await {
+            cfg.api_key = cur.api_key;
+        }
+    }
     config::set_llm_config(&state, cfg).await.map_err(|e| e.to_string())
 }
 

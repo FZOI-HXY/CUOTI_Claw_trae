@@ -305,6 +305,8 @@ impl PaddleOcrService {
 
     async fn download_text(&self, url: &str) -> Result<String> {
         Self::validate_result_url(url)?;
+        // SSRF 增强：解析 DNS，防止主机名重绑定到内网地址
+        reject_local_dns(url).await?;
         let resp = self
             .client
             .get(url)
@@ -491,6 +493,46 @@ fn is_local_host(host: &str) -> bool {
     host.starts_with("::1") || host.starts_with("fd") && host.contains(':')
 }
 
+/// 判断 IP 是否为内网/环回/链路本地/未指定地址（DNS 解析后的 IP 校验用）
+fn is_private_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local()
+        }
+    }
+}
+
+/// 解析主机名并拒绝解析到内网/环回/链路本地地址的 URL（防 DNS 重绑定）。
+/// IP 字面量已在 `validate_result_url` 静态校验，这里只处理主机名。
+async fn reject_local_dns(url: &str) -> Result<()> {
+    let parsed = Url::parse(url).map_err(|e| Error::Ocr(format!("结果 URL 解析失败: {}", e)))?;
+    let host = parsed.host_str().unwrap_or("");
+    // IP 字面量已由静态校验处理，跳过
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(());
+    }
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| Error::Ocr(format!("结果 URL 主机 DNS 解析失败: {}", e)))?;
+    for addr in addrs {
+        if is_private_ip(&addr.ip()) {
+            return Err(Error::Ocr(format!(
+                "结果 URL 解析到内网地址，已拒绝: {}",
+                host
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +572,32 @@ mod tests {
         assert!(!is_local_host("api.paddle.com"));
         assert!(!is_local_host("172.32.0.1")); // 172.32 不在内网段
         assert!(!is_local_host("203.0.113.7"));
+    }
+
+    // ---- SSRF 增强：is_private_ip ----
+    #[test]
+    fn test_is_private_ip_true() {
+        use std::net::IpAddr;
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "192.168.1.1",
+            "172.16.0.1",
+            "172.31.255.255",
+            "169.254.1.1",
+            "0.0.0.0",
+            "::1",
+        ] {
+            assert!(is_private_ip(&ip.parse::<IpAddr>().unwrap()), "{}", ip);
+        }
+    }
+
+    #[test]
+    fn test_is_private_ip_false() {
+        use std::net::IpAddr;
+        for ip in ["8.8.8.8", "1.1.1.1", "172.32.0.1", "203.0.113.7"] {
+            assert!(!is_private_ip(&ip.parse::<IpAddr>().unwrap()), "{}", ip);
+        }
     }
 
     // ---- SSRF 防护：validate_result_url ----

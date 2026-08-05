@@ -33,6 +33,38 @@ impl LlmCleaner {
         }
     }
 
+    /// 校验配置：api_key/base_url 非空，且 base_url 仅允许 http(s) 协议
+    fn check_config(&self) -> Result<()> {
+        if self.api_key.is_empty() || self.base_url.is_empty() {
+            return Err(Error::Cleaner("LLM 未配置".into()));
+        }
+        if !self.base_url.starts_with("https://") && !self.base_url.starts_with("http://") {
+            return Err(Error::Cleaner(format!(
+                "LLM base_url 必须使用 http(s) 协议: {}",
+                &self.base_url[..self.base_url.len().min(60)]
+            )));
+        }
+        Ok(())
+    }
+
+    /// 带超时的 HTTP 客户端，避免请求无限挂起
+    fn client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_default()
+    }
+
+    /// 截断错误响应体，避免把超长（可能含敏感信息）内容回传
+    fn truncate(msg: &str) -> String {
+        let m: String = msg.chars().take(200).collect();
+        if msg.chars().count() > 200 {
+            m + "...(truncated)"
+        } else {
+            m
+        }
+    }
+
     fn build_prompt(ocr_text: &str) -> String {
         format!(
             r#"你是一个错题整理助手。请把下面 OCR 识别出的题目文本，提取为严格的 JSON 对象，不要输出任何其他内容。
@@ -75,11 +107,9 @@ OCR 文本：
 #[async_trait]
 impl Cleaner for LlmCleaner {
     async fn clean(&self, ocr_text: &str) -> Result<CleanedQuestion> {
-        if self.api_key.is_empty() || self.base_url.is_empty() {
-            return Err(Error::Cleaner("LLM 未配置".into()));
-        }
+        self.check_config()?;
 
-        let client = reqwest::Client::new();
+        let client = Self::client();
         let url = format!("{}/chat/completions", self.base_url);
         let body = json!({
             "model": self.model,
@@ -102,7 +132,7 @@ impl Cleaner for LlmCleaner {
         if !resp.status().is_success() {
             let status = resp.status();
             let msg = resp.text().await.unwrap_or_default();
-            return Err(Error::Cleaner(format!("LLM HTTP {}: {}", status, msg)));
+            return Err(Error::Cleaner(format!("LLM HTTP {}: {}", status, Self::truncate(&msg))));
         }
 
         let json: Value = resp
@@ -152,11 +182,9 @@ impl Cleaner for LlmCleaner {
     }
 
     async fn ask(&self, question: &str, context: &str) -> Result<String> {
-        if self.api_key.is_empty() || self.base_url.is_empty() {
-            return Err(Error::Cleaner("LLM 未配置".into()));
-        }
+        self.check_config()?;
 
-        let client = reqwest::Client::new();
+        let client = Self::client();
         let url = format!("{}/chat/completions", self.base_url);
         let body = json!({
             "model": self.model,
@@ -178,7 +206,7 @@ impl Cleaner for LlmCleaner {
         if !resp.status().is_success() {
             let status = resp.status();
             let msg = resp.text().await.unwrap_or_default();
-            return Err(Error::Cleaner(format!("LLM HTTP {}: {}", status, msg)));
+            return Err(Error::Cleaner(format!("LLM HTTP {}: {}", status, Self::truncate(&msg))));
         }
 
         let json: Value = resp

@@ -454,8 +454,9 @@ class TestUploadWorkerAuth:
         """UploadWorker 对未知扩展名应使用 application/octet-stream 回退"""
         from apps.desktop.workers.api_task import UploadWorker
 
-        # 创建未知扩展名的文件
-        test_file = temp_dir / "test_unknown.xyz"
+        # 创建未知扩展名的文件（用 .zzzzz，避免 .xyz 在不同 Python 版本
+        # 的 mimetypes 数据库中被识别为 chemical/x-xyz）
+        test_file = temp_dir / "test_unknown.zzzzz"
         test_file.write_bytes(b"unknown content")
 
         files_sent = []
@@ -486,7 +487,7 @@ class TestUploadWorkerAuth:
             files_param = files_sent[0]
             file_tuple = files_param["file"]
             filename, fileobj, content_type = file_tuple
-            assert filename == "test_unknown.xyz"
+            assert filename == "test_unknown.zzzzz"
             # mimetypes.guess_type 对未知扩展名返回 None，应使用默认值
             assert content_type == "application/octet-stream"
 
