@@ -248,9 +248,13 @@ class TestPollResultStuckDetection:
     """测试轮询卡死检测"""
 
     @pytest.mark.anyio
-    async def test_poll_result_stuck_detection(self):
+    async def test_poll_result_stuck_detection(self, monkeypatch):
         """进度长时间不变应触发卡死检测"""
         from apps.web.api.paddle_service import PaddleOCRService
+        from apps.web.api.config import settings
+
+        # 置零轮询间隔，避免 22 次轮询各自 sleep 5s 拖慢测试（逻辑不变）
+        monkeypatch.setattr(settings, "poll_interval", 0)
 
         service = PaddleOCRService(api_url="https://api.example.com", api_key="key")
 
@@ -278,9 +282,13 @@ class TestPollResultStuckDetection:
             assert "任务卡死" in result["error"]
 
     @pytest.mark.anyio
-    async def test_poll_result_resumes_after_progress(self):
+    async def test_poll_result_resumes_after_progress(self, monkeypatch):
         """进度变化后应重置卡死计数"""
         from apps.web.api.paddle_service import PaddleOCRService
+        from apps.web.api.config import settings
+
+        # 置零轮询间隔，避免 10 次轮询各自 sleep 5s 拖慢测试（逻辑不变）
+        monkeypatch.setattr(settings, "poll_interval", 0)
 
         service = PaddleOCRService(api_url="https://api.example.com", api_key="key")
 
@@ -320,9 +328,13 @@ class TestPollResultStuckDetection:
                 assert result["success"] is True
 
     @pytest.mark.anyio
-    async def test_poll_result_pending_no_stuck_detection(self):
+    async def test_poll_result_pending_no_stuck_detection(self, monkeypatch):
         """pending 状态不触发卡死检测"""
         from apps.web.api.paddle_service import PaddleOCRService
+        from apps.web.api.config import settings
+
+        # 置零轮询间隔，避免 25 次轮询各自 sleep 5s 拖慢测试（逻辑不变）
+        monkeypatch.setattr(settings, "poll_interval", 0)
 
         service = PaddleOCRService(api_url="https://api.example.com", api_key="key")
 
@@ -362,9 +374,13 @@ class TestPollResultNetworkErrors:
     """测试网络异常处理"""
 
     @pytest.mark.anyio
-    async def test_poll_result_network_error_threshold(self):
+    async def test_poll_result_network_error_threshold(self, monkeypatch):
         """连续网络异常超过阈值应判定不可达"""
         from apps.web.api.paddle_service import PaddleOCRService
+        from apps.web.api.config import settings
+
+        # 置零轮询间隔，避免多次轮询各自 sleep 5s 拖慢测试（逻辑不变）
+        monkeypatch.setattr(settings, "poll_interval", 0)
 
         service = PaddleOCRService(api_url="https://api.example.com", api_key="key")
 
@@ -379,9 +395,13 @@ class TestPollResultNetworkErrors:
             assert "不可达" in result["error"]
 
     @pytest.mark.anyio
-    async def test_poll_result_recovers_after_error(self):
+    async def test_poll_result_recovers_after_error(self, monkeypatch):
         """网络异常后恢复应继续轮询"""
         from apps.web.api.paddle_service import PaddleOCRService
+        from apps.web.api.config import settings
+
+        # 置零轮询间隔，避免多次轮询各自 sleep 5s 拖慢测试（逻辑不变）
+        monkeypatch.setattr(settings, "poll_interval", 0)
 
         service = PaddleOCRService(api_url="https://api.example.com", api_key="key")
 
@@ -422,8 +442,10 @@ class TestPollResultNetworkErrors:
         from apps.web.api.config import settings
 
         original_retries = settings.poll_max_retries
+        original_interval = settings.poll_interval
         try:
             settings.poll_max_retries = 5
+            settings.poll_interval = 0  # 置零间隔，避免 5 次轮询各自 sleep 5s
 
             service = PaddleOCRService(api_url="https://api.example.com", api_key="key")
 
@@ -438,6 +460,7 @@ class TestPollResultNetworkErrors:
                 assert "轮询超时" in result["error"]
         finally:
             settings.poll_max_retries = original_retries
+            settings.poll_interval = original_interval
 
 
 @pytest.mark.unit
