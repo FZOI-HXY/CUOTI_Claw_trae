@@ -325,7 +325,7 @@ async fn clean_text(
 // ---- 元信息 ----
 
 #[tauri::command]
-async fn get_meta() -> Result<cuoti_core::models::Meta, String> {
+async fn get_meta() -> Result<cuoti_core::meta::Meta, String> {
     Ok(meta::meta())
 }
 

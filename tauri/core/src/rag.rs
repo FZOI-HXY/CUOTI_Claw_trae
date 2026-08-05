@@ -26,7 +26,7 @@ fn question_text(q: &crate::models::Question) -> String {
 const EMBED_MODEL: &str = "local:bge-small-zh-v1.5";
 
 /// 增量索引结果
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct IndexSummary {
     /// 本次成功索引的数量
     pub indexed: usize,

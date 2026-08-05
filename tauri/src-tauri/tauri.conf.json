@@ -19,7 +19,7 @@
   },
   "build": {
     "frontendDist": "../frontend/dist",
-    "devUrl": "../frontend/src"
+    "devUrl": "http://localhost:1420"
   },
   "plugins": {
     "dialog": {

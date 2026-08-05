@@ -112,6 +112,7 @@ node_modules/
 tauri/frontend/node_modules/
 tauri/frontend/dist/
 tauri/target/
+tauri/src-tauri/gen/
 target/
 
 # ── 其他 ──
