@@ -198,7 +198,7 @@ impl Cleaner for LlmCleaner {
 }
 
 /// 从 LLM 输出中提取 JSON 对象（去除 ```json 包裹等）
-fn extract_json(content: &str) -> &str {
+pub fn extract_json(content: &str) -> &str {
     let trimmed = content.trim();
     // 去掉 markdown 代码块围栏
     if trimmed.starts_with("```") {

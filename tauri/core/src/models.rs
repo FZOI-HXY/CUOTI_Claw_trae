@@ -255,3 +255,45 @@ pub struct RagAnswer {
     pub answer: String,
     pub sources: Vec<RagSource>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_question_type_roundtrip_all_variants() {
+        for t in [
+            QuestionType::Single,
+            QuestionType::Multiple,
+            QuestionType::Judge,
+            QuestionType::Fill,
+            QuestionType::Answer,
+        ] {
+            assert_eq!(QuestionType::from_str(t.as_str()), Some(t));
+        }
+    }
+
+    #[test]
+    fn test_question_type_from_str_invalid() {
+        assert_eq!(QuestionType::from_str("essay"), None);
+        assert_eq!(QuestionType::from_str(""), None);
+        assert_eq!(QuestionType::from_str("SINGLE"), None); // 大小写敏感
+    }
+
+    #[test]
+    fn test_mastery_status_roundtrip_all_variants() {
+        for s in [
+            MasteryStatus::NotMastered,
+            MasteryStatus::Mastered,
+            MasteryStatus::NeedReview,
+        ] {
+            assert_eq!(MasteryStatus::from_str(s.as_str()), Some(s));
+        }
+    }
+
+    #[test]
+    fn test_mastery_status_from_str_invalid() {
+        assert_eq!(MasteryStatus::from_str("finished"), None);
+        assert_eq!(MasteryStatus::from_str(""), None);
+    }
+}

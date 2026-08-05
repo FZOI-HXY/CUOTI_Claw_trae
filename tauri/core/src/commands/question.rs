@@ -176,6 +176,73 @@ pub async fn toggle_favorite(state: &AppState, id: i64) -> Result<Question> {
     get_question(&state.pool, id).await
 }
 
+/// 批量删除错题，返回删除数量
+pub async fn batch_delete(state: &AppState, ids: Vec<i64>) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = placeholders(ids.len());
+    let sql = format!("DELETE FROM questions WHERE id IN ({})", placeholders);
+    let mut q = sqlx::query(&sql);
+    for id in &ids {
+        q = q.bind(id);
+    }
+    let rows = q.execute(&state.pool).await?;
+    Ok(rows.rows_affected() as usize)
+}
+
+/// 批量更新掌握状态，返回更新数量
+pub async fn batch_update_status(state: &AppState, ids: Vec<i64>, status: String) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    if MasteryStatus::from_str(&status).is_none() {
+        return Err(Error::Invalid(format!("无效的掌握状态: {}", status)));
+    }
+    let placeholders = placeholders(ids.len());
+    let sql = format!(
+        "UPDATE questions SET status = ?, last_reviewed_at = datetime('now','localtime'),
+         updated_at = datetime('now','localtime') WHERE id IN ({})",
+        placeholders
+    );
+    let mut q = sqlx::query(&sql).bind(&status);
+    for id in &ids {
+        q = q.bind(id);
+    }
+    let rows = q.execute(&state.pool).await?;
+    Ok(rows.rows_affected() as usize)
+}
+
+/// 批量切换收藏，返回更新数量
+pub async fn batch_toggle_favorite(state: &AppState, ids: Vec<i64>) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = placeholders(ids.len());
+    let sql = format!(
+        "UPDATE questions SET is_favorite = 1 - is_favorite,
+         updated_at = datetime('now','localtime') WHERE id IN ({})",
+        placeholders
+    );
+    let mut q = sqlx::query(&sql);
+    for id in &ids {
+        q = q.bind(id);
+    }
+    let rows = q.execute(&state.pool).await?;
+    Ok(rows.rows_affected() as usize)
+}
+
+/// 生成 `?,?,?` 形式的占位符
+fn placeholders(n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    std::iter::repeat("?")
+        .take(n)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// 按 ID 获取错题
 pub async fn get_by_id(state: &AppState, id: i64) -> Result<Question> {
     get_question(&state.pool, id).await

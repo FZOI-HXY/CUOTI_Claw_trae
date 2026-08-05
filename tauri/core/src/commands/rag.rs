@@ -4,7 +4,7 @@ use crate::cleaner::LlmCleaner;
 use crate::embedder;
 use crate::error::Result;
 use crate::models::{RagAnswer, RagSource};
-use crate::rag;
+use crate::rag::{self, IndexSummary};
 
 use super::{config, AppState};
 
@@ -19,6 +19,11 @@ pub async fn ask(state: &AppState, question: String, top_k: Option<usize>) -> Re
 /// 为所有错题建立向量索引，返回索引数量
 pub async fn index(state: &AppState) -> Result<usize> {
     rag::index_all(state, embedder::local_embedder().await?).await
+}
+
+/// 增量索引：仅处理无向量或已过期的错题
+pub async fn index_incremental(state: &AppState) -> Result<IndexSummary> {
+    rag::index_incremental(state, embedder::local_embedder().await?).await
 }
 
 /// 纯语义检索（供调试/后续语义搜索）

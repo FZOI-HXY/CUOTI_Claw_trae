@@ -22,30 +22,84 @@ fn question_text(q: &crate::models::Question) -> String {
     parts.join("\n")
 }
 
+/// 嵌入模型标识
+const EMBED_MODEL: &str = "local:bge-small-zh-v1.5";
+
+/// 增量索引结果
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexSummary {
+    /// 本次成功索引的数量
+    pub indexed: usize,
+    /// 无需索引（已是最新）或嵌入失败被跳过的数量
+    pub skipped: usize,
+}
+
+/// 为单道题生成嵌入并入库（upsert，记录题目更新时间以便增量检测）
+async fn upsert_embedding(
+    state: &AppState,
+    q: &crate::models::Question,
+    embedder: &dyn Embedder,
+) -> Result<bool> {
+    let text = question_text(q);
+    let vec = match embedder.embed(&[text]).await {
+        Ok(mut v) if !v.is_empty() => v.remove(0),
+        _ => return Ok(false),
+    };
+    sqlx::query(
+        "INSERT INTO question_embeddings (question_id, model, vector, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(question_id) DO UPDATE SET
+           model = excluded.model, vector = excluded.vector, updated_at = excluded.updated_at",
+    )
+    .bind(q.id)
+    .bind(EMBED_MODEL)
+    .bind(encode_vec(&vec))
+    .bind(&q.updated_at)
+    .execute(&state.pool)
+    .await?;
+    Ok(true)
+}
+
 /// 为所有题目生成嵌入并入库，返回成功索引数量
 pub async fn index_all(state: &AppState, embedder: &dyn Embedder) -> Result<usize> {
     let questions = question::list_questions(state, &QuestionFilter::default()).await?;
     let mut indexed = 0usize;
     for q in questions {
-        let text = question_text(&q);
-        let vec = match embedder.embed(&[text]).await {
-            Ok(mut v) if !v.is_empty() => v.remove(0),
-            _ => continue,
-        };
-        sqlx::query(
-            "INSERT INTO question_embeddings (question_id, model, vector, updated_at)
-             VALUES (?, ?, ?, datetime('now','localtime'))
-             ON CONFLICT(question_id) DO UPDATE SET
-               model = excluded.model, vector = excluded.vector, updated_at = datetime('now','localtime')",
-        )
-        .bind(q.id)
-        .bind("local:bge-small-zh-v1.5")
-        .bind(encode_vec(&vec))
-        .execute(&state.pool)
-        .await?;
-        indexed += 1;
+        if upsert_embedding(state, &q, embedder).await? {
+            indexed += 1;
+        }
     }
     Ok(indexed)
+}
+
+/// 增量索引：仅处理「无向量」或「向量早于题目更新」的题目
+pub async fn index_incremental(
+    state: &AppState,
+    embedder: &dyn Embedder,
+) -> Result<IndexSummary> {
+    let ids = sqlx::query_scalar::<_, i64>(
+        "SELECT q.id FROM questions q
+         LEFT JOIN question_embeddings e ON e.question_id = q.id
+         WHERE e.question_id IS NULL OR e.updated_at < q.updated_at",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM questions")
+        .fetch_one(&state.pool)
+        .await?;
+
+    let mut indexed = 0usize;
+    for id in ids {
+        if let Ok(q) = question::get_by_id(state, id).await {
+            if upsert_embedding(state, &q, embedder).await? {
+                indexed += 1;
+            }
+        }
+    }
+    Ok(IndexSummary {
+        indexed,
+        skipped: (total as usize).saturating_sub(indexed),
+    })
 }
 
 /// 语义检索：查询向量化 → 余弦相似度 → top_k
@@ -253,5 +307,68 @@ mod tests {
             .expect("ask");
         assert!(ans.answer.contains("没有检索到相关题目"));
         assert!(ans.sources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_index_incremental_only_indexes_new_and_missing() {
+        let (state, q1, q2) = setup_state().await;
+        let embedder = MockEmbedder { dim: 8 };
+
+        // 首次全量索引
+        let n = index_all(&state, &embedder).await.expect("index all");
+        assert_eq!(n, 2);
+
+        // 新增一道题
+        q3(&state).await;
+
+        // 增量：只索引新题，跳过已索引的
+        let s1 = index_incremental(&state, &embedder).await.expect("incremental 1");
+        assert_eq!(s1.indexed, 1, "应只索引新增的题");
+        assert_eq!(s1.skipped, 2, "已有两道应被跳过");
+
+        // 删除 q1 的向量 → 应被重新索引
+        sqlx::query("DELETE FROM question_embeddings WHERE question_id = ?")
+            .bind(q1)
+            .execute(&state.pool)
+            .await
+            .expect("delete embedding q1");
+        let s2 = index_incremental(&state, &embedder).await.expect("incremental 2");
+        assert_eq!(s2.indexed, 1);
+        assert_eq!(s2.skipped, 2);
+
+        // 模拟 q2 修改导致向量过期（updated_at 晚于向量时间）
+        sqlx::query("UPDATE questions SET updated_at = datetime('now','localtime','+1 day') WHERE id = ?")
+            .bind(q2)
+            .execute(&state.pool)
+            .await
+            .expect("stale q2");
+        let s3 = index_incremental(&state, &embedder).await.expect("incremental 3");
+        assert_eq!(s3.indexed, 1, "过期向量应被重新索引");
+    }
+
+    async fn q3(state: &AppState) -> i64 {
+        crate::commands::question::create_question(
+            state,
+            QuestionInput {
+                subject_id: 1,
+                chapter_id: None,
+                qtype: Some("single".into()),
+                title: "三角函数".into(),
+                options: None,
+                answer: Some("sin".into()),
+                analysis: None,
+                difficulty: Some(1),
+                status: None,
+                notes: None,
+                is_favorite: None,
+                image_path: None,
+                source: None,
+                wrong_reason: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("create q3")
+        .id
     }
 }

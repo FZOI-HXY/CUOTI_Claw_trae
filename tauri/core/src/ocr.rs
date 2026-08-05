@@ -490,3 +490,149 @@ fn is_local_host(host: &str) -> bool {
     // IPv6 本地地址
     host.starts_with("::1") || host.starts_with("fd") && host.contains(':')
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- 错误码映射 ----
+    #[test]
+    fn test_map_error_code_known() {
+        assert_eq!(map_error_code(401), "Token无效，请检查 access_token");
+        assert_eq!(map_error_code(10001), "空文件，请检查文件内容");
+        assert_eq!(map_error_code(10007), "模型参数错误，请检查模型名称");
+        assert_eq!(map_error_code(12001), "每日页数上限，请查看配额说明");
+    }
+
+    #[test]
+    fn test_map_error_code_unknown() {
+        assert_eq!(map_error_code(99999), "未知错误");
+    }
+
+    // ---- SSRF 防护：is_local_host ----
+    #[test]
+    fn test_is_local_host_true_cases() {
+        assert!(is_local_host("localhost"));
+        assert!(is_local_host("127.0.0.1"));
+        assert!(is_local_host("myhost.local"));
+        assert!(is_local_host("10.0.0.1"));
+        assert!(is_local_host("192.168.1.1"));
+        assert!(is_local_host("172.16.0.1"));
+        assert!(is_local_host("172.31.255.255"));
+        assert!(is_local_host("169.254.169.254"));
+        assert!(is_local_host("::1"));
+    }
+
+    #[test]
+    fn test_is_local_host_false_cases() {
+        assert!(!is_local_host("example.com"));
+        assert!(!is_local_host("8.8.8.8"));
+        assert!(!is_local_host("api.paddle.com"));
+        assert!(!is_local_host("172.32.0.1")); // 172.32 不在内网段
+        assert!(!is_local_host("203.0.113.7"));
+    }
+
+    // ---- SSRF 防护：validate_result_url ----
+    #[test]
+    fn test_validate_result_url_rejects_empty() {
+        assert!(PaddleOcrService::validate_result_url("").is_err());
+    }
+
+    #[test]
+    fn test_validate_result_url_rejects_non_http() {
+        assert!(PaddleOcrService::validate_result_url("ftp://example.com/x").is_err());
+    }
+
+    #[test]
+    fn test_validate_result_url_rejects_localhost() {
+        assert!(PaddleOcrService::validate_result_url("https://localhost:8080/result").is_err());
+        assert!(PaddleOcrService::validate_result_url("http://127.0.0.1/result").is_err());
+    }
+
+    #[test]
+    fn test_validate_result_url_rejects_internal_ip() {
+        assert!(PaddleOcrService::validate_result_url("http://192.168.1.10/result").is_err());
+        assert!(PaddleOcrService::validate_result_url("http://10.0.0.5/result").is_err());
+    }
+
+    #[test]
+    fn test_validate_result_url_rejects_invalid_url() {
+        assert!(PaddleOcrService::validate_result_url("://bad").is_err());
+    }
+
+    #[test]
+    fn test_validate_result_url_accepts_external_https() {
+        assert!(PaddleOcrService::validate_result_url("https://paddle-external.com/result.json").is_ok());
+    }
+
+    // ---- extract_result 分支 ----
+    #[test]
+    fn test_extract_uses_markdown_text_directly() {
+        let r = PaddleOcrService::extract_result("{}", Some("# 直接结果"));
+        assert!(r.success);
+        assert_eq!(r.markdown_text, "# 直接结果");
+    }
+
+    #[test]
+    fn test_extract_single_json_vl_structure() {
+        let json = r##"{"result":{"layoutParsingResults":[{"markdown":{"text":"# 题目\nx=2"}}]}}"##;
+        let r = PaddleOcrService::extract_result(json, None);
+        assert!(r.success);
+        assert!(r.markdown_text.contains("x=2"));
+    }
+
+    #[test]
+    fn test_extract_jsonl_multiple_lines() {
+        let jsonl = r#"
+{"result":{"layoutParsingResults":[{"markdown":{"text":"第一段"}}]}}
+{"result":{"layoutParsingResults":[{"markdown":{"text":"第二段"}}]}}
+"#;
+        let r = PaddleOcrService::extract_result(jsonl, None);
+        assert!(r.success);
+        assert!(r.markdown_text.contains("第一段"));
+        assert!(r.markdown_text.contains("第二段"));
+    }
+
+    #[test]
+    fn test_extract_ocr_results_pp_ocr() {
+        let json = r##"{"result":{"ocrResults":[{"ocrImage":"纯文本行A"},{"ocrImage":"纯文本行B"}]}}"##;
+        let r = PaddleOcrService::extract_result(json, None);
+        assert!(r.success);
+        assert!(r.markdown_text.contains("纯文本行A"));
+        assert!(r.markdown_text.contains("纯文本行B"));
+    }
+
+    #[test]
+    fn test_extract_images() {
+        let json = r##"{"result":{"layoutParsingResults":[{"markdown":{"text":"图","images":{"1":"https://img.example.com/a.png"}}}]}}"##;
+        let r = PaddleOcrService::extract_result(json, None);
+        assert!(r.success);
+        assert_eq!(r.images.len(), 1);
+        assert!(r.images.values().any(|u| u == "https://img.example.com/a.png"));
+    }
+
+    #[test]
+    fn test_extract_empty_gives_error() {
+        let r = PaddleOcrService::extract_result("{\"noop\":true}", None);
+        assert!(!r.success);
+        assert!(r.error.is_some());
+    }
+
+    // ---- optional_payload 模型分支 ----
+    #[test]
+    fn test_optional_payload_vl_model() {
+        let svc = PaddleOcrService::new("http://x".into(), "k".into(), Some("PaddleOCR-VL-1.6".into()));
+        let p = svc.optional_payload();
+        assert!(p.get("useDocUnwarping").is_some());
+        assert!(p.get("useTextlineOrientation").is_none());
+    }
+
+    #[test]
+    fn test_optional_payload_pure_ocr() {
+        let svc = PaddleOcrService::new("http://x".into(), "k".into(), Some("PaddleOCRv6".into()));
+        let p = svc.optional_payload();
+        // 纯 OCR 分支：有 useTextlineOrientation，无 useChartRecognition
+        assert!(p.get("useTextlineOrientation").is_some());
+        assert!(p.get("useChartRecognition").is_none());
+    }
+}

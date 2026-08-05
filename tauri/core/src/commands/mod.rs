@@ -1,5 +1,6 @@
 //! 业务命令模块（错题/科目/知识点/标签/统计/配置/OCR）
 
+pub mod backup;
 pub mod chapter;
 pub mod config;
 pub mod ocr;

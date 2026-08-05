@@ -3,7 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use cuoti_core::commands::{
-    chapter, config, ocr, question, rag as rag_cmd, stats, subject, tag, AppState,
+    backup, chapter, config, ocr, question, rag as rag_cmd, stats, subject, tag, AppState,
 };
 use cuoti_core::db;
 use cuoti_core::meta;
@@ -35,6 +35,9 @@ fn main() {
             update_status,
             increment_wrong_count,
             toggle_favorite,
+            batch_delete_questions,
+            batch_update_status,
+            batch_toggle_favorite,
             // 科目
             create_subject,
             list_subjects,
@@ -62,9 +65,13 @@ fn main() {
             recognize_image,
             clean_text,
             get_meta,
+            // 备份
+            export_all,
+            import_all,
             // RAG
             rag_ask,
             rag_index,
+            rag_index_incremental,
             rag_retrieve,
         ])
         .run(tauri::generate_context!())
@@ -142,6 +149,25 @@ async fn toggle_favorite(
     id: i64,
 ) -> Result<cuoti_core::models::Question, String> {
     question::toggle_favorite(&state, id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn batch_delete_questions(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
+    question::batch_delete(&state, ids).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn batch_update_status(
+    state: State<'_, AppState>,
+    ids: Vec<i64>,
+    status: String,
+) -> Result<usize, String> {
+    question::batch_update_status(&state, ids, status).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn batch_toggle_favorite(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
+    question::batch_toggle_favorite(&state, ids).await.map_err(|e| e.to_string())
 }
 
 // ---- 科目 ----
@@ -303,6 +329,21 @@ async fn get_meta() -> Result<cuoti_core::models::Meta, String> {
     Ok(meta::meta())
 }
 
+// ---- 备份 ----
+
+#[tauri::command]
+async fn export_all(state: State<'_, AppState>) -> Result<String, String> {
+    backup::export_all(&state).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn import_all(
+    state: State<'_, AppState>,
+    json: String,
+) -> Result<cuoti_core::commands::backup::ImportSummary, String> {
+    backup::import_all(&state, &json).await.map_err(|e| e.to_string())
+}
+
 // ---- RAG ----
 
 #[tauri::command]
@@ -317,6 +358,13 @@ async fn rag_ask(
 #[tauri::command]
 async fn rag_index(state: State<'_, AppState>) -> Result<usize, String> {
     rag_cmd::index(&state).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn rag_index_incremental(
+    state: State<'_, AppState>,
+) -> Result<cuoti_core::rag::IndexSummary, String> {
+    rag_cmd::index_incremental(&state).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
