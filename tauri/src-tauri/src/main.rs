@@ -2,7 +2,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use cuoti_core::commands::{config, question, stats, subject, tag, chapter, ocr, AppState};
+use cuoti_core::commands::{
+    chapter, config, ocr, question, rag as rag_cmd, stats, subject, tag, AppState,
+};
 use cuoti_core::db;
 use cuoti_core::meta;
 use tauri::{Manager, State};
@@ -60,6 +62,10 @@ fn main() {
             recognize_image,
             clean_text,
             get_meta,
+            // RAG
+            rag_ask,
+            rag_index,
+            rag_retrieve,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -295,4 +301,29 @@ async fn clean_text(
 #[tauri::command]
 async fn get_meta() -> Result<cuoti_core::models::Meta, String> {
     Ok(meta::meta())
+}
+
+// ---- RAG ----
+
+#[tauri::command]
+async fn rag_ask(
+    state: State<'_, AppState>,
+    question: String,
+    top_k: Option<usize>,
+) -> Result<cuoti_core::models::RagAnswer, String> {
+    rag_cmd::ask(&state, question, top_k).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn rag_index(state: State<'_, AppState>) -> Result<usize, String> {
+    rag_cmd::index(&state).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn rag_retrieve(
+    state: State<'_, AppState>,
+    query: String,
+    top_k: Option<usize>,
+) -> Result<Vec<cuoti_core::models::RagSource>, String> {
+    rag_cmd::retrieve(&state, query, top_k).await.map_err(|e| e.to_string())
 }

@@ -4,6 +4,7 @@ pub mod chapter;
 pub mod config;
 pub mod ocr;
 pub mod question;
+pub mod rag;
 pub mod stats;
 pub mod subject;
 pub mod tag;
