@@ -116,3 +116,19 @@ pub fn ensure_dir(path: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_question_embeddings_table_exists_after_migrate() {
+        let pool = init_db(None).await.expect("init memory db");
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='question_embeddings'")
+                .fetch_one(&pool)
+                .await
+                .expect("query table existence");
+        assert_eq!(row.0, 1, "question_embeddings 表应存在");
+    }
+}
