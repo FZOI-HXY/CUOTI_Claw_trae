@@ -88,6 +88,13 @@ pub async fn migrate(pool: &SqlitePool) -> Result<()> {
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL DEFAULT ''
         );
+
+        CREATE TABLE IF NOT EXISTS question_embeddings (
+            question_id INTEGER PRIMARY KEY REFERENCES questions(id) ON DELETE CASCADE,
+            model       TEXT NOT NULL,
+            vector      BLOB NOT NULL,
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );
         "#,
     )
     .execute(pool)

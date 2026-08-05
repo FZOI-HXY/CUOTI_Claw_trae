@@ -180,4 +180,24 @@ describe("api", () => {
       expect(invoke).toHaveBeenCalledWith("clean_text", { text: "题目文本" });
     });
   });
+
+  describe("RAG", () => {
+    it("ragAsk 调用 rag_ask 并传入 question/top_k", async () => {
+      invoke.mockResolvedValue({ answer: "ok", sources: [] });
+      await api.ragAsk("怎样解二次方程", 5);
+      expect(invoke).toHaveBeenCalledWith("rag_ask", { question: "怎样解二次方程", top_k: 5 });
+    });
+
+    it("ragIndex 调用 rag_index", async () => {
+      invoke.mockResolvedValue(3);
+      await api.ragIndex();
+      expect(invoke).toHaveBeenCalledWith("rag_index");
+    });
+
+    it("ragRetrieve 调用 rag_retrieve 并传入 query", async () => {
+      invoke.mockResolvedValue([]);
+      await api.ragRetrieve("勾股定理", 3);
+      expect(invoke).toHaveBeenCalledWith("rag_retrieve", { query: "勾股定理", top_k: 3 });
+    });
+  });
 });

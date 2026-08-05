@@ -13,6 +13,8 @@ use crate::models::{CleanedQuestion, LlmConfig};
 pub trait Cleaner: Send + Sync {
     /// 将 OCR 文本规范化为错题草稿
     async fn clean(&self, ocr_text: &str) -> Result<CleanedQuestion>;
+    /// 基于检索上下文回答用户问题（RAG 问答）
+    async fn ask(&self, question: &str, context: &str) -> Result<String>;
 }
 
 /// OpenAI 兼容 LLM 清洗实现
@@ -50,6 +52,22 @@ OCR 文本：
 {ocr}
 "#,
             ocr = ocr_text
+        )
+    }
+
+    fn build_ask_prompt(question: &str, context: &str) -> String {
+        format!(
+            r#"参考以下错题上下文回答用户的问题。
+
+相关错题：
+{context}
+
+用户问题：
+{question}
+
+请给出清晰、有条理的回答，并在适当处标注引用来源（如 [1]）。"#,
+            context = context,
+            question = question
         )
     }
 }
@@ -132,6 +150,51 @@ impl Cleaner for LlmCleaner {
             tags: get_arr("tags"),
         })
     }
+
+    async fn ask(&self, question: &str, context: &str) -> Result<String> {
+        if self.api_key.is_empty() || self.base_url.is_empty() {
+            return Err(Error::Cleaner("LLM 未配置".into()));
+        }
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/chat/completions", self.base_url);
+        let body = json!({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": "你是错题辅导助手，基于给定题目上下文回答用户问题，需引用相关题目。若上下文不足以回答，请明确说明。"},
+                {"role": "user", "content": Self::build_ask_prompt(question, context)}
+            ],
+            "temperature": 0.3
+        });
+
+        let resp = client
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Cleaner(format!("调用 LLM 失败: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let msg = resp.text().await.unwrap_or_default();
+            return Err(Error::Cleaner(format!("LLM HTTP {}: {}", status, msg)));
+        }
+
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::Cleaner(format!("解析 LLM 响应失败: {}", e)))?;
+
+        json.get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|c| c.first())
+            .and_then(|c| c.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| Error::Cleaner("LLM 响应缺少 content".into()))
+    }
 }
 
 /// 从 LLM 输出中提取 JSON 对象（去除 ```json 包裹等）
@@ -171,5 +234,12 @@ mod tests {
     fn test_extract_json_plain() {
         let s = "{\"title\":\"hello\"}";
         assert_eq!(extract_json(s), s);
+    }
+
+    #[test]
+    fn test_build_ask_prompt_contains_context_and_question() {
+        let prompt = LlmCleaner::build_ask_prompt("一元二次方程怎么解？", "[1] 题目: 解方程 x^2-5x+6=0");
+        assert!(prompt.contains("x^2-5x+6=0"));
+        assert!(prompt.contains("一元二次方程怎么解？"));
     }
 }

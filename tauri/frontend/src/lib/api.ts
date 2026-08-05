@@ -8,6 +8,8 @@ import type {
   Question,
   QuestionFilter,
   QuestionInput,
+  RagAnswer,
+  RagSource,
   Stats,
   Subject,
   Tag,
@@ -68,3 +70,10 @@ export const recognizeImage = (imageData: number[], filename: string) =>
   invoke<OcrDraft>("recognize_image", { imageData, filename });
 export const cleanText = (text: string) =>
   invoke<CleanedQuestion>("clean_text", { text });
+
+// ---- RAG ----
+export const ragAsk = (question: string, top_k?: number) =>
+  invoke<RagAnswer>("rag_ask", { question, top_k });
+export const ragIndex = () => invoke<number>("rag_index");
+export const ragRetrieve = (query: string, top_k?: number) =>
+  invoke<RagSource[]>("rag_retrieve", { query, top_k });

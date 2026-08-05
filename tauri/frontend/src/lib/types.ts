@@ -140,3 +140,14 @@ export interface OcrDraft {
   cleaned?: CleanedQuestion | null;
   error?: string | null;
 }
+
+export interface RagSource {
+  question_id: number;
+  title: string;
+  score: number;
+}
+
+export interface RagAnswer {
+  answer: string;
+  sources: RagSource[];
+}

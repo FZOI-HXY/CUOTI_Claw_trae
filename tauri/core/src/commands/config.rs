@@ -12,6 +12,8 @@ const KEY_LLM_URL: &str = "llm_base_url";
 const KEY_LLM_KEY: &str = "llm_api_key";
 const KEY_LLM_MODEL: &str = "llm_model";
 const KEY_LLM_ENABLED: &str = "llm_enabled";
+const KEY_EMBED_PROVIDER: &str = "embed_provider";
+const KEY_EMBED_MODEL: &str = "embed_model";
 
 pub async fn get(state: &AppState, key: &str) -> Option<String> {
     sqlx::query_scalar::<_, String>("SELECT value FROM config WHERE key = ?")
@@ -92,5 +94,18 @@ pub fn ensure_configured(cfg: &OcrConfig) -> Result<()> {
             "PaddleOCR API 未配置，请在设置中填写 API URL 和 API Key".into(),
         ));
     }
+    Ok(())
+}
+
+/// 读取嵌入配置（provider: local/api，model: 嵌入模型名）
+pub async fn get_embed_config(state: &AppState) -> Result<(String, String)> {
+    let provider = get(state, KEY_EMBED_PROVIDER).await.unwrap_or_else(|| "local".into());
+    let model = get(state, KEY_EMBED_MODEL).await.unwrap_or_else(|| "bge-small-zh-v1.5".into());
+    Ok((provider, model))
+}
+
+pub async fn set_embed_config(state: &AppState, provider: &str, model: &str) -> Result<()> {
+    set(state, KEY_EMBED_PROVIDER, provider).await?;
+    set(state, KEY_EMBED_MODEL, model).await?;
     Ok(())
 }

@@ -240,3 +240,18 @@ pub struct CleanedQuestion {
     pub chapter: Option<String>,
     pub tags: Option<Vec<String>>,
 }
+
+/// RAG 检索到的来源题目
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RagSource {
+    pub question_id: i64,
+    pub title: String,
+    pub score: f32,
+}
+
+/// RAG 问答结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RagAnswer {
+    pub answer: String,
+    pub sources: Vec<RagSource>,
+}
