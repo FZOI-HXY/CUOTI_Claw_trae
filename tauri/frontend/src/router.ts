@@ -7,6 +7,7 @@ const QuestionDetail = defineAsyncComponent(() => import("./views/QuestionDetail
 const Review = defineAsyncComponent(() => import("./views/Review.vue"));
 const Statistics = defineAsyncComponent(() => import("./views/Statistics.vue"));
 const Settings = defineAsyncComponent(() => import("./views/Settings.vue"));
+const RagChat = defineAsyncComponent(() => import("./views/RagChat.vue"));
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -18,6 +19,7 @@ const router = createRouter({
     { path: "/review", component: Review },
     { path: "/statistics", component: Statistics },
     { path: "/settings", component: Settings },
+    { path: "/assistant", component: RagChat },
   ],
 });
 

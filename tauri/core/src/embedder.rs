@@ -1,6 +1,10 @@
 //! 嵌入层：trait 抽象 + 本地 fastembed 实现 + 检索纯逻辑
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use tokio::sync::OnceCell;
 
 use crate::error::{Error, Result};
 
@@ -9,6 +13,57 @@ use crate::error::{Error, Result};
 pub trait Embedder: Send + Sync {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
     fn dim(&self) -> usize;
+}
+
+/// 本地 fastembed 嵌入实现（bge-small-zh-v1.5，CPU/ONNX）
+pub struct LocalEmbedder {
+    model: Arc<TextEmbedding>,
+    dim: usize,
+}
+
+impl LocalEmbedder {
+    pub async fn new() -> Result<Self> {
+        let (model, dim) = tokio::task::spawn_blocking(|| {
+            let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::BGESmallZHV15))
+                .map_err(|e| Error::Cleaner(format!("加载嵌入模型失败: {}", e)))?;
+            // fastembed 4.x 未暴露 dim()，用一次空嵌入确定输出维度
+            let dim = model
+                .embed(vec!["".to_string()], None)
+                .map_err(|e| Error::Cleaner(format!("嵌入失败: {}", e)))?
+                .first()
+                .map(|v| v.len())
+                .unwrap_or(0);
+            Ok::<_, Error>((Arc::new(model), dim))
+        })
+        .await
+        .map_err(|e| Error::Cleaner(format!("嵌入模型线程失败: {}", e)))??;
+
+        Ok(Self { model, dim })
+    }
+}
+
+#[async_trait]
+impl Embedder for LocalEmbedder {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let model = Arc::clone(&self.model);
+        let texts = texts.to_vec();
+        tokio::task::spawn_blocking(move || model.embed(texts, None))
+            .await
+            .map_err(|e| Error::Cleaner(format!("嵌入线程失败: {}", e)))?
+            .map_err(|e| Error::Cleaner(format!("嵌入失败: {}", e)))
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+}
+
+/// 全局单例：整个应用只加载一次本地模型
+static LOCAL_EMBEDDER: OnceCell<LocalEmbedder> = OnceCell::const_new();
+
+/// 获取本地嵌入器单例（懒加载）
+pub async fn local_embedder() -> Result<&'static LocalEmbedder> {
+    LOCAL_EMBEDDER.get_or_try_init(LocalEmbedder::new).await
 }
 
 /// 余弦相似度（空向量或维度不一致返回 0）

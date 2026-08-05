@@ -14,5 +14,6 @@ pub mod error;
 pub mod meta;
 pub mod models;
 pub mod ocr;
+pub mod rag;
 
 pub use error::{Error, Result};

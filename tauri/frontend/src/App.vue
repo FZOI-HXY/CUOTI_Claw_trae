@@ -42,6 +42,13 @@ onMounted(() => meta.loadAll());
           统计
         </RouterLink>
         <RouterLink
+          to="/assistant"
+          class="block px-3 py-2 rounded-md text-sm hover:bg-gray-100"
+          active-class="bg-brand-50 text-brand-600 font-medium"
+        >
+          AI 问答
+        </RouterLink>
+        <RouterLink
           to="/settings"
           class="block px-3 py-2 rounded-md text-sm hover:bg-gray-100"
           active-class="bg-brand-50 text-brand-600 font-medium"
