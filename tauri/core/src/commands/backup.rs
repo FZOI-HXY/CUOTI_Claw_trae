@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::models::{Chapter, Subject, Tag};
+use crate::models::{Chapter, ConfigItem, Subject, Tag};
 
 use super::AppState;
 
@@ -24,6 +24,8 @@ pub struct BackupData {
     pub subjects: Vec<Subject>,
     pub chapters: Vec<Chapter>,
     pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub config: Vec<ConfigItem>,
     pub questions: Vec<BackupQuestion>,
 }
 
@@ -59,6 +61,8 @@ pub async fn export_all(state: &AppState) -> Result<String> {
         .fetch_all(&state.pool)
         .await?;
 
+    let config = crate::commands::config::get_all(state).await?;
+
     let questions = crate::commands::question::list_questions(state, &Default::default()).await?;
     let questions = questions
         .into_iter()
@@ -86,6 +90,7 @@ pub async fn export_all(state: &AppState) -> Result<String> {
         subjects,
         chapters,
         tags,
+        config,
         questions,
     };
     serde_json::to_string_pretty(&data).map_err(|e| Error::Cleaner(format!("序列化备份失败: {e}")))
@@ -104,6 +109,8 @@ pub async fn import_all(state: &AppState, json: &str) -> Result<ImportSummary> {
         return Err(Error::Invalid(format!("不支持的备份版本: {}", data.version)));
     }
 
+    let mut tx = state.pool.begin().await?;
+
     let mut summary = ImportSummary {
         subjects: 0,
         chapters: 0,
@@ -120,14 +127,14 @@ pub async fn import_all(state: &AppState, json: &str) -> Result<ImportSummary> {
         }
         let existing = sqlx::query_scalar::<_, i64>("SELECT id FROM subjects WHERE name = ?")
             .bind(&name)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&mut *tx)
             .await?;
         let id = match existing {
             Some(id) => id,
             None => {
                 let res = sqlx::query("INSERT INTO subjects (name) VALUES (?)")
                     .bind(&name)
-                    .execute(&state.pool)
+                    .execute(&mut *tx)
                     .await?;
                 summary.subjects += 1;
                 res.last_insert_rowid()
@@ -144,12 +151,12 @@ pub async fn import_all(state: &AppState, json: &str) -> Result<ImportSummary> {
         }
         let existing = sqlx::query_scalar::<_, i64>("SELECT id FROM tags WHERE name = ?")
             .bind(&name)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&mut *tx)
             .await?;
         if existing.is_none() {
             let res = sqlx::query("INSERT INTO tags (name) VALUES (?)")
                 .bind(&name)
-                .execute(&state.pool)
+                .execute(&mut *tx)
                 .await?;
             let _ = res.last_insert_rowid();
             summary.tags += 1;
@@ -194,7 +201,7 @@ pub async fn import_all(state: &AppState, json: &str) -> Result<ImportSummary> {
                     )
                     .bind(&sname)
                     .bind(&pname)
-                    .fetch_optional(&state.pool)
+                    .fetch_optional(&mut *tx)
                     .await?
                     .unwrap_or(0)
                 }
@@ -216,7 +223,7 @@ pub async fn import_all(state: &AppState, json: &str) -> Result<ImportSummary> {
         )
         .bind(&sname)
         .bind(&name)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await?;
         let id = match existing {
             Some(id) => id,
@@ -228,7 +235,7 @@ pub async fn import_all(state: &AppState, json: &str) -> Result<ImportSummary> {
                 .bind(new_parent_id)
                 .bind(&name)
                 .bind(&path)
-                .execute(&state.pool)
+                .execute(&mut *tx)
                 .await?;
                 summary.chapters += 1;
                 res.last_insert_rowid()
@@ -237,6 +244,23 @@ pub async fn import_all(state: &AppState, json: &str) -> Result<ImportSummary> {
         chapter_ids.insert(c.id, id);
         chapter_paths.insert(c.id, path);
     }
+
+    // 配置：upsert 写回（不含该字段的旧备份会默认空列表）
+    for item in &data.config {
+        sqlx::query(
+            "INSERT INTO config (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(&item.key)
+        .bind(&item.value)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // 提交结构数据（科目/章节/标签/配置）事务，释放写锁。
+    // create_question 内部走 state.pool（另一条连接）；若此处仍持有未提交的
+    // 写事务，SQLite 写锁会让 create_question 阻塞（in-memory 共享库会死锁）。
+    tx.commit().await?;
 
     // 4. 错题：通过 create_question 写库（处理标签）
     for q in &data.questions {

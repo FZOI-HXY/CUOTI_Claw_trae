@@ -44,9 +44,18 @@ pub async fn get_all(state: &AppState) -> Result<Vec<ConfigItem>> {
 }
 
 pub async fn set_all(state: &AppState, items: Vec<ConfigItem>) -> Result<()> {
+    let mut tx = state.pool.begin().await?;
     for item in items {
-        set(state, &item.key, &item.value).await?;
+        sqlx::query(
+            "INSERT INTO config (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(&item.key)
+        .bind(&item.value)
+        .execute(&mut *tx)
+        .await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 //! 数据导出/导入 集成测试（内存库）
 
-use cuoti_core::commands::{backup, question, subject, AppState};
+use cuoti_core::commands::{backup, config, question, subject, AppState};
 use cuoti_core::db;
 use cuoti_core::models::QuestionInput;
 
@@ -111,4 +111,49 @@ async fn test_export_import_preserves_chapter_hierarchy() {
     let root_id = by_name.get("代数").copied().expect("代数存在");
     let eq = child.iter().find(|c| c.name == "方程").expect("方程存在");
     assert_eq!(eq.parent_id, root_id, "子知识点应保留父级引用");
+}
+
+#[tokio::test]
+async fn test_export_import_roundtrip_preserves_config() {
+    let state = seeded_state().await;
+    config::set(&state, "llm_base_url", "https://api.example.com").await.expect("set");
+    config::set(&state, "llm_api_key", "secret-key").await.expect("set");
+    config::set(&state, "ocr_model", "PaddleOCR-VL-1.6").await.expect("set");
+
+    let json = backup::export_all(&state).await.expect("export");
+
+    // 导入到全新数据库
+    let fresh = AppState::new(db::init_db(None).await.expect("fresh db"));
+    let summary = backup::import_all(&fresh, &json).await.expect("import");
+    assert!(summary.subjects >= 1);
+
+    assert_eq!(
+        config::get(&fresh, "llm_base_url").await,
+        Some("https://api.example.com".into()),
+        "导入后应能取到原配置值"
+    );
+    assert_eq!(config::get(&fresh, "llm_api_key").await, Some("secret-key".into()));
+    assert_eq!(config::get(&fresh, "ocr_model").await, Some("PaddleOCR-VL-1.6".into()));
+}
+
+#[tokio::test]
+async fn test_import_legacy_backup_without_config_field() {
+    // 手写一个不含 config 字段的旧版备份 JSON（version=1）
+    let json = r#"{
+        "version": 1,
+        "subjects": [{"id": 1, "name": "数学", "created_at": "2024-01-01T00:00:00Z"}],
+        "chapters": [],
+        "tags": [],
+        "questions": []
+    }"#;
+
+    let fresh = AppState::new(db::init_db(None).await.expect("fresh db"));
+    let summary = backup::import_all(&fresh, json).await.expect("legacy import 应成功");
+    assert_eq!(summary.subjects, 1, "旧备份科目应导入");
+    assert_eq!(summary.questions, 0);
+
+    // 科目应实际落库
+    let list = subject::list_subjects(&fresh).await.expect("list subjects");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].name, "数学");
 }

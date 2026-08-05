@@ -139,3 +139,30 @@ async fn test_get_all_and_set_all_roundtrip() {
     assert_eq!(map.get("a").map(String::as_str), Some("1"));
     assert_eq!(map.get("b").map(String::as_str), Some("2"));
 }
+
+#[tokio::test]
+async fn test_set_all_idempotent_overwrites_within_transaction() {
+    let s = state().await;
+    let first = vec![
+        ConfigItem { key: "x".into(), value: "1".into() },
+        ConfigItem { key: "y".into(), value: "1".into() },
+    ];
+    config::set_all(&s, first).await.expect("set all first");
+
+    // 二次写入应整体覆盖（幂等），且前次部分 key 仍存在
+    let second = vec![
+        ConfigItem { key: "x".into(), value: "2".into() },
+        ConfigItem { key: "y".into(), value: "2".into() },
+    ];
+    config::set_all(&s, second).await.expect("set all second");
+
+    assert_eq!(config::get(&s, "x").await.as_deref(), Some("2"));
+    assert_eq!(config::get(&s, "y").await.as_deref(), Some("2"));
+}
+
+#[tokio::test]
+async fn test_set_all_empty_commits_ok() {
+    let s = state().await;
+    config::set_all(&s, Vec::new()).await.expect("empty set all ok");
+    assert!(config::get_all(&s).await.expect("get all").is_empty());
+}

@@ -261,38 +261,37 @@ pub async fn list_questions(state: &AppState, filter: &QuestionFilter) -> Result
         WHERE 1=1
         "#,
     );
-    let mut conds: Vec<String> = Vec::new();
-    if let Some(sid) = filter.subject_id {
-        conds.push(format!("q.subject_id = {}", sid));
+    let mut conds: Vec<&str> = Vec::new();
+    if filter.subject_id.is_some() {
+        conds.push("q.subject_id = ?");
     }
-    if let Some(cid) = filter.chapter_id {
-        conds.push(format!("q.chapter_id = {}", cid));
+    if filter.chapter_id.is_some() {
+        conds.push("q.chapter_id = ?");
     }
-    if let Some(qt) = &filter.qtype {
-        conds.push(format!("q.qtype = '{}'", qt.replace('\'', "''")));
+    if filter.qtype.is_some() {
+        conds.push("q.qtype = ?");
     }
-    if let Some(d) = filter.difficulty {
-        conds.push(format!("q.difficulty = {}", d));
+    if filter.difficulty.is_some() {
+        conds.push("q.difficulty = ?");
     }
-    if let Some(st) = &filter.status {
-        conds.push(format!("q.status = '{}'", st.replace('\'', "''")));
+    if filter.status.is_some() {
+        conds.push("q.status = ?");
     }
-    if let Some(fav) = filter.is_favorite {
-        conds.push(format!("q.is_favorite = {}", fav as i64));
+    if filter.is_favorite.is_some() {
+        conds.push("q.is_favorite = ?");
     }
-    if let Some(tag) = &filter.tag {
-        conds.push(format!(
-            "q.id IN (SELECT question_id FROM question_tags qt JOIN tags t ON t.id=qt.tag_id WHERE t.name='{}')",
-            tag.replace('\'', "''")
-        ));
+    if filter.tag.is_some() {
+        conds.push(
+            "q.id IN (SELECT question_id FROM question_tags qt JOIN tags t ON t.id=qt.tag_id WHERE t.name = ?)",
+        );
     }
-    if let Some(kw) = &filter.keyword {
-        if !kw.trim().is_empty() {
-            let kw = kw.trim().replace('\'', "''");
-            conds.push(format!(
-                "(q.title LIKE '%{kw}%' OR q.answer LIKE '%{kw}%' OR q.analysis LIKE '%{kw}%')"
-            ));
-        }
+    let keyword_used = filter
+        .keyword
+        .as_ref()
+        .map(|kw| !kw.trim().is_empty())
+        .unwrap_or(false);
+    if keyword_used {
+        conds.push("(q.title LIKE ? OR q.answer LIKE ? OR q.analysis LIKE ?)");
     }
     if !conds.is_empty() {
         sql.push_str(" AND ");
@@ -300,7 +299,33 @@ pub async fn list_questions(state: &AppState, filter: &QuestionFilter) -> Result
     }
     sql.push_str(" ORDER BY q.updated_at DESC");
 
-    let rows = sqlx::query_as::<_, QuestionRow>(&sql).fetch_all(&state.pool).await?;
+    let mut q = sqlx::query_as::<_, QuestionRow>(&sql);
+    if let Some(sid) = filter.subject_id {
+        q = q.bind(sid);
+    }
+    if let Some(cid) = filter.chapter_id {
+        q = q.bind(cid);
+    }
+    if let Some(qt) = &filter.qtype {
+        q = q.bind(qt);
+    }
+    if let Some(d) = filter.difficulty {
+        q = q.bind(d);
+    }
+    if let Some(st) = &filter.status {
+        q = q.bind(st);
+    }
+    if let Some(fav) = filter.is_favorite {
+        q = q.bind(fav as i64);
+    }
+    if let Some(tag) = &filter.tag {
+        q = q.bind(tag);
+    }
+    if keyword_used {
+        let like = format!("%{}%", filter.keyword.as_ref().unwrap().trim());
+        q = q.bind(like.clone()).bind(like.clone()).bind(like);
+    }
+    let rows = q.fetch_all(&state.pool).await?;
     Ok(rows.into_iter().map(map_row).collect())
 }
 
