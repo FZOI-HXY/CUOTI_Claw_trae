@@ -132,7 +132,7 @@ pub async fn retrieve(
     let questions = question::list_questions(state, &QuestionFilter::default()).await?;
     let docs: Vec<(i64, String)> = questions
         .iter()
-        .map(|q| (q.id, question_text(q)))
+        .map(|q| (q.id, question_keyword_text(q)))
         .collect();
     let keyword_scores = hybrid::bm25_scores(&docs, query);
     let keyword_top = top_k_scores(
@@ -610,5 +610,41 @@ mod tests {
         assert_eq!(qtype_label("fill"), "填空");
         assert_eq!(qtype_label("answer"), "解答");
         assert_eq!(qtype_label("unknown"), "题目");
+    }
+
+    #[test]
+    fn test_bm25_recalls_by_metadata_keyword() {
+        let mk = |subject: Option<String>, chapter: Option<String>, qtype: &str, tags: Option<Vec<String>>| crate::models::Question {
+            id: 0,
+            subject_id: 1,
+            chapter_id: Some(2),
+            qtype: qtype.into(),
+            title: "求解 x".into(),
+            options: None,
+            answer: Some("x=2".into()),
+            analysis: None,
+            difficulty: 2,
+            status: "not_mastered".into(),
+            wrong_count: 0,
+            notes: None,
+            is_favorite: false,
+            image_path: None,
+            source: None,
+            wrong_reason: None,
+            last_reviewed_at: None,
+            created_at: "".into(),
+            updated_at: "".into(),
+            subject_name: subject,
+            chapter_name: chapter,
+            tags,
+        };
+        let docs: Vec<(i64, String)> = vec![
+            (1, question_keyword_text(&mk(Some("数学".into()), Some("函数".into()), "single", None))),
+            (2, question_keyword_text(&mk(Some("物理".into()), Some("力学".into()), "fill", Some(vec!["重点".into()])))),
+        ];
+        // 查询只含「填空」—— 仅 doc2 的 qtype 元信息命中
+        let scores = hybrid::bm25_scores(&docs, "填空");
+        let (top_id, _) = scores.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).expect("non-empty");
+        assert_eq!(*top_id, 2, "应按题型元信息召回 doc2");
     }
 }
