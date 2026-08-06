@@ -162,16 +162,26 @@ pub async fn retrieve(
     });
 
     // 4. 组装结果：顺序按融合排序，score 保留向量余弦（供前端展示）
+    // 批量拉取命中的题目，避免逐条查询（N+1）
     let mut out = Vec::new();
+    let mut qids: Vec<i64> = fused
+        .iter()
+        .filter_map(|(qid, _)| {
+            let score = *cosine_map.get(qid).unwrap_or(&0.0);
+            (score > 0.0).then_some(*qid)
+        })
+        .collect();
+    qids.truncate(top_k);
+    let qmap = question::get_by_ids(state, &qids).await?;
     for (qid, _) in fused {
         let score = *cosine_map.get(&qid).unwrap_or(&0.0);
         if score <= 0.0 {
             continue;
         }
-        if let Ok(q) = question::get_by_id(state, qid).await {
+        if let Some(q) = qmap.get(&qid) {
             out.push(RagSource {
                 question_id: qid,
-                title: q.title,
+                title: q.title.clone(),
                 score,
             });
         }
@@ -248,9 +258,24 @@ pub async fn ask(
         });
     }
 
+    // 批量取来源题目的完整信息（一次查询，避免 N+1），供上下文增强
+    let ids: Vec<i64> = sources.iter().map(|s| s.question_id).collect();
+    let qmap = question::get_by_ids(state, &ids).await?;
+
     let mut ctx = String::new();
     for (i, s) in sources.iter().enumerate() {
         ctx.push_str(&format!("[{}] 题目: {}\n", i + 1, s.title));
+        if let Some(q) = qmap.get(&s.question_id) {
+            if let Some(opt) = &q.options {
+                ctx.push_str(&format!("   选项: {}\n", opt));
+            }
+            if let Some(ans) = &q.answer {
+                ctx.push_str(&format!("   参考答案: {}\n", ans));
+            }
+            if let Some(an) = &q.analysis {
+                ctx.push_str(&format!("   解析: {}\n", an));
+            }
+        }
     }
     let mut answer = cleaner.ask(question, &ctx).await?;
 
@@ -806,5 +831,52 @@ mod tests {
         let ans = ask(&state, &embedder, &cleaner, "问题", 5).await.expect("ask");
         assert!(!ans.answer.contains("建议确认题目原文"), "强相关不应有提示: {}", ans.answer);
         assert!(ans.answer.starts_with("answer for:"), "应正常生成");
+    }
+
+    #[tokio::test]
+    async fn test_ask_context_includes_answer_and_analysis() {
+        let pool = db::init_db(None).await.expect("memory db");
+        let state = AppState::new(pool);
+        let subj = crate::commands::subject::create_subject(&state, "数学".into())
+            .await
+            .expect("subj");
+        let qid = crate::commands::question::create_question(
+            &state,
+            QuestionInput {
+                subject_id: subj.id,
+                chapter_id: None,
+                qtype: Some("single".into()),
+                title: "勾股定理".into(),
+                options: None,
+                answer: Some("标准答案XYZ".into()),
+                analysis: Some("解析要点ABC".into()),
+                difficulty: Some(2),
+                status: None,
+                notes: None,
+                is_favorite: None,
+                image_path: None,
+                source: None,
+                wrong_reason: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("create")
+        .id;
+        sqlx::query(
+            "INSERT OR REPLACE INTO question_embeddings (question_id, model, vector, updated_at)
+             VALUES (?,?,?,datetime('now','localtime'))",
+        )
+        .bind(qid)
+        .bind(EMBED_MODEL)
+        .bind(encode_vec(&vec![1.0f32, 0.0]))
+        .execute(&state.pool)
+        .await
+        .expect("insert vec");
+        let cleaner = MockCleaner;
+        let embedder = QueryEmbedder { qvec: vec![1.0, 0.0] };
+        let ans = ask(&state, &embedder, &cleaner, "问题", 5).await.expect("ask");
+        assert!(ans.answer.contains("标准答案XYZ"), "上下文应包含答案: {}", ans.answer);
+        assert!(ans.answer.contains("解析要点ABC"), "上下文应包含解析: {}", ans.answer);
     }
 }

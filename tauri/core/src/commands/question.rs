@@ -1,6 +1,7 @@
 //! 错题 CRUD、筛选、搜索、状态更新
 
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 
 use crate::error::{Error, Result};
 use crate::models::{MasteryStatus, Question, QuestionFilter, QuestionInput, QuestionType};
@@ -246,6 +247,32 @@ fn placeholders(n: usize) -> String {
 /// 按 ID 获取错题
 pub async fn get_by_id(state: &AppState, id: i64) -> Result<Question> {
     get_question(&state.pool, id).await
+}
+
+/// 按多个 ID 批量获取错题（保留传入顺序，返回 HashMap 便于查找）
+pub async fn get_by_ids(state: &AppState, ids: &[i64]) -> Result<HashMap<i64, Question>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = placeholders(ids.len());
+    let sql = format!(
+        r#"
+        SELECT q.*, s.name AS subject_name, c.name AS chapter_name,
+               (SELECT GROUP_CONCAT(t.name) FROM question_tags qt
+                 JOIN tags t ON t.id = qt.tag_id WHERE qt.question_id = q.id) AS tag_names
+        FROM questions q
+        LEFT JOIN subjects s ON s.id = q.subject_id
+        LEFT JOIN chapters c ON c.id = q.chapter_id
+        WHERE q.id IN ({})
+        "#,
+        placeholders
+    );
+    let mut q = sqlx::query_as::<_, QuestionRow>(&sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(&state.pool).await?;
+    Ok(rows.into_iter().map(|r| (r.id, map_row(r))).collect())
 }
 
 /// 列表 + 筛选 + 搜索
