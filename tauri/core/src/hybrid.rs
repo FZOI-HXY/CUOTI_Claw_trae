@@ -103,6 +103,78 @@ pub fn rrf_fuse(lists: &[Vec<(i64, f32)>], k: f32) -> Vec<(i64, f32)> {
     v
 }
 
+/// 预构建的 BM25 语料：一次性分词并统计 df/avgdl，供多次查询复用，
+/// 避免对同一批文档反复 tokenize（缓存单元）。
+#[derive(Clone)]
+pub struct Bm25Corpus {
+    doc_ids: Vec<i64>,
+    doc_tokens: Vec<Vec<String>>,
+    doc_lens: Vec<usize>,
+    df: HashMap<String, u32>,
+    n: f32,
+    avgdl: f32,
+}
+
+impl Bm25Corpus {
+    /// 从文档构建语料（docs: (doc_id, 文本)）
+    pub fn build(docs: &[(i64, String)]) -> Self {
+        let mut doc_tokens: Vec<Vec<String>> = Vec::with_capacity(docs.len());
+        let mut doc_lens: Vec<usize> = Vec::with_capacity(docs.len());
+        let mut df: HashMap<String, u32> = HashMap::new();
+        for (_, text) in docs {
+            let toks = tokenize(text);
+            doc_lens.push(toks.len());
+            let mut seen = HashSet::new();
+            for t in &toks {
+                if seen.insert(t.clone()) {
+                    *df.entry(t.clone()).or_insert(0) += 1;
+                }
+            }
+            doc_tokens.push(toks);
+        }
+        let n = docs.len().max(1) as f32;
+        let avgdl: f32 = if doc_lens.is_empty() {
+            1.0
+        } else {
+            doc_lens.iter().sum::<usize>() as f32 / doc_lens.len() as f32
+        };
+        Self {
+            doc_ids: docs.iter().map(|(id, _)| *id).collect(),
+            doc_tokens,
+            doc_lens,
+            df,
+            n,
+            avgdl,
+        }
+    }
+
+    /// 对查询打分，返回 (doc_id, score)，与 `bm25_scores` 同口径
+    pub fn score(&self, query: &str) -> Vec<(i64, f32)> {
+        const K1: f32 = 1.5;
+        const B: f32 = 0.75;
+        let q_tokens = tokenize(query);
+        let mut scores = vec![0.0f32; self.doc_tokens.len()];
+        for term in &q_tokens {
+            let df_t = *self.df.get(term).unwrap_or(&0);
+            let idf = ((self.n - df_t as f32 + 0.5) / (df_t as f32 + 0.5) + 1.0).ln();
+            for (i, doc) in self.doc_tokens.iter().enumerate() {
+                let tf = doc.iter().filter(|t| *t == term).count() as f32;
+                if tf == 0.0 {
+                    continue;
+                }
+                let dl = self.doc_lens[i] as f32;
+                let denom = tf + K1 * (1.0 - B + B * dl / self.avgdl);
+                scores[i] += idf * (tf * (K1 + 1.0)) / denom;
+            }
+        }
+        self.doc_ids
+            .iter()
+            .copied()
+            .zip(scores)
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +234,29 @@ mod tests {
         let vector = vec![(5, 0.9), (6, 0.8)];
         let fused = rrf_fuse(&[vector], 60.0);
         assert_eq!(fused, vec![(5, 1.0 / 61.0), (6, 1.0 / 62.0)]);
+    }
+
+    #[test]
+    fn test_bm25_corpus_matches_bm25_scores() {
+        let docs = vec![
+            (1, "一元二次方程求解 x^2-5x+6=0".to_string()),
+            (2, "勾股定理 三角形 直角".to_string()),
+            (3, "一元二次方程 配方".to_string()),
+        ];
+        let corpus = Bm25Corpus::build(&docs);
+        let direct = bm25_scores(&docs, "一元二次方程");
+        let cached = corpus.score("一元二次方程");
+        // 同 id 对应分数一致（允许浮点误差）
+        for (id, s_cached) in &cached {
+            let s_direct = direct
+                .iter()
+                .find(|(did, _)| did == id)
+                .map(|(_, s)| *s)
+                .unwrap_or(0.0);
+            assert!((s_cached - s_direct).abs() < 1e-5, "id {} 分数不一致", id);
+        }
+        // 多次调用结果稳定（缓存价值体现）
+        let cached2 = corpus.score("一元二次方程");
+        assert_eq!(cached2, cached);
     }
 }

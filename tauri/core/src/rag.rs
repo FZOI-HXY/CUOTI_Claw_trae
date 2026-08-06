@@ -8,6 +8,7 @@ use crate::error::Result;
 use crate::hybrid;
 use crate::models::{QuestionFilter, RagAnswer, RagSource};
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 /// 拼接题目文本作为嵌入输入
 fn question_text(q: &crate::models::Question) -> String {
@@ -139,6 +140,24 @@ pub async fn index_incremental(
     })
 }
 
+/// BM25 语料缓存：按文档内容比对失效，避免对同一批题目反复分词。
+/// 持锁时间短，仅用于比对与取用；题目数据量级下内存可接受。
+static BM25_CACHE: OnceLock<Mutex<Option<(Vec<(i64, String)>, hybrid::Bm25Corpus)>>> =
+    OnceLock::new();
+
+fn bm25_corpus_for(docs: &[(i64, String)]) -> hybrid::Bm25Corpus {
+    let cache = BM25_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((cached_docs, corpus)) = guard.as_ref() {
+        if cached_docs == docs {
+            return corpus.clone();
+        }
+    }
+    let corpus = hybrid::Bm25Corpus::build(docs);
+    *guard = Some((docs.to_vec(), corpus.clone()));
+    corpus
+}
+
 /// 语义检索：查询向量化 → 余弦相似度 → top_k
 pub async fn retrieve(
     state: &AppState,
@@ -169,7 +188,7 @@ pub async fn retrieve(
         .iter()
         .map(|q| (q.id, question_keyword_text(q)))
         .collect();
-    let keyword_scores = hybrid::bm25_scores(&docs, query);
+    let keyword_scores = bm25_corpus_for(&docs).score(query);
     let keyword_top = top_k_scores(
         keyword_scores.into_iter().filter(|(_, s)| *s > 0.0).collect(),
         top_k,
