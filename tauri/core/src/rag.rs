@@ -246,9 +246,9 @@ pub async fn ask(
         });
     }
 
-    // 自检1：全部来源相关性弱 → 短路，不浪费 LLM 调用
-    let max_score = sources.iter().map(|s| s.score).fold(0.0f32, f32::max);
-    if max_score < WEAK_SCORE {
+    // 自检1：最强来源相关性弱 → 短路，不浪费 LLM 调用
+    // 判定基准与自检2统一为 sources[0].score（融合排序后的第一名）
+    if sources[0].score < WEAK_SCORE {
         return Ok(RagAnswer {
             answer: format!(
                 "检索到 {} 道相关题目，但与问题相关性较低，以下题目仅供参考，可能无法给出准确解答。",
