@@ -32,6 +32,36 @@ pub const WEAK_SCORE: f32 = 0.30;
 /// 余弦相似度：低于该值但非空，生成后追加接地提示
 pub const GROUNDING_SCORE: f32 = 0.45;
 
+/// 计算升序分数样本的百分位（p ∈ [0,100]），线性插值。
+/// 用于基于真实相似度分布校准 WEAK_SCORE / GROUNDING_SCORE。
+pub fn percentile(sorted: &[f32], p: f32) -> f32 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = p / 100.0 * (sorted.len() - 1) as f32;
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    if lo == hi {
+        return sorted[lo];
+    }
+    let frac = rank - lo as f32;
+    sorted[lo] + (sorted[hi] - sorted[lo]) * frac
+}
+
+/// 基于分数样本分布给出建议阈值 (weak, grounding)。
+/// 启发式：weak = 低分位锚点，grounding = 中分位锚点；样本不足时回落默认值。
+pub fn suggest_thresholds(samples: &[f32]) -> (f32, f32) {
+    if samples.len() < 10 {
+        return (WEAK_SCORE, GROUNDING_SCORE);
+    }
+    let mut sorted = samples.iter().copied().collect::<Vec<_>>();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let weak = percentile(&sorted, 25.0);
+    let grounding = percentile(&sorted, 50.0);
+    // 保证 weak <= grounding，且都在合法范围内
+    (weak.min(grounding).clamp(0.0, 1.0), grounding.clamp(0.0, 1.0))
+}
+
 /// 增量索引结果
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct IndexSummary {
@@ -878,5 +908,26 @@ mod tests {
         let ans = ask(&state, &embedder, &cleaner, "问题", 5).await.expect("ask");
         assert!(ans.answer.contains("标准答案XYZ"), "上下文应包含答案: {}", ans.answer);
         assert!(ans.answer.contains("解析要点ABC"), "上下文应包含解析: {}", ans.answer);
+    }
+
+    #[test]
+    fn test_percentile_linear_interpolation() {
+        let sorted = [0.1, 0.2, 0.3, 0.4];
+        assert!((percentile(&sorted, 0.0) - 0.1).abs() < 1e-6);
+        assert!((percentile(&sorted, 100.0) - 0.4).abs() < 1e-6);
+        // 50% 分位 = (0.2 + 0.3)/2 = 0.25
+        assert!((percentile(&sorted, 50.0) - 0.25).abs() < 1e-5);
+        assert_eq!(percentile(&[], 50.0), 0.0);
+    }
+
+    #[test]
+    fn test_suggest_thresholds_uses_distribution_and_falls_back() {
+        // 样本不足 → 回落默认值
+        assert_eq!(suggest_thresholds(&[0.1, 0.2, 0.3]), (WEAK_SCORE, GROUNDING_SCORE));
+        // 足够样本 → 取分位数，且 weak <= grounding
+        let samples: Vec<f32> = (0..20).map(|i| 0.1 + i as f32 * 0.04).collect(); // 0.1..0.86
+        let (weak, grounding) = suggest_thresholds(&samples);
+        assert!(weak <= grounding, "weak 不应超过 grounding: {} > {}", weak, grounding);
+        assert!(weak >= 0.0 && grounding <= 1.0);
     }
 }
