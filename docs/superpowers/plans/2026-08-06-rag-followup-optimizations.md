@@ -22,7 +22,8 @@
 - [x] **G1-5 BM25 分词缓存**：`Bm25Corpus` 跨查询缓存（`60121bd`）
 - [x] **G1.5-5.1 最小化检索评估**：`recall_at_k` 召回率量化（`1d24005`）
 - [x] **G2-6 Cross-encoder 重排**：fastembed `TextRerank`（bge-reranker-base）对 top-k 精排，零新增依赖
-- [x] 全量回归验证（Rust 单元 60 + 集成 67、前端 33，全过；接口零侵入）
+- [x] **G2-8 上下文窗口/成本控制**：`CTX_MAX_CHARS` 字符上限截断 top-k，首条超长时截断纳入，其余跳过
+- [x] 全量回归验证（Rust 单元 61 + 集成 67、前端 33，全过；接口零侵入）
 
 ---
 
@@ -86,8 +87,8 @@
 | # | 优化项 | 状态 |
 |---|--------|------|
 | 6 | **Cross-encoder 重排**：RRF 融合输出后用 cross-encoder 对 top-k 精排 | ✅ 零新增依赖（借助已内置 fastembed `TextRerank`/bge-reranker-base） |
-| 7 | **ANN 向量索引**：用 `sqlite-vec` 虚拟表做 HNSW/IVF 近似检索 | ⬜ 万级以上题目检索加速 |
-| 8 | **上下文窗口/成本控制**：按 token 上限截断 top-k | ⬜ 需加 token 计数 |
+| 7 | **ANN 向量索引**：用 `sqlite-vec` 虚拟表做 HNSW/IVF 近似检索 | ⏸ 暂缓（需新增扩展依赖，违反规则5；当前错题量级全量扫描已足够快，仅万级再评估） |
+| 8 | **上下文窗口/成本控制**：按字符上限截断 top-k | ✅ `CTX_MAX_CHARS` 已落地 |
 
 ---
 
@@ -107,8 +108,9 @@
 1. ~~先做 Group 1~~（✅ 已完成，5 项均已提交）
 2. ~~补 Group 1.5 最小化评估~~（✅ `recall_at_k` 已落地；5.2 Parent-Document 因单题天然完整判定不适用）
 3. ~~做 Group 2 第 6 项 cross-encoder 重排~~（✅ 已落地，借助已内置 fastembed RerankModel，零新增依赖）
-4. 剩余可选：Group 2 第 8 项 token 上限截断（低成本）、Group 2 第 7 项 ANN 索引（万级数据再评估）。
-5. Group 3 建议在当前体量落地后再考虑，暂不需要。
+4. ~~做 Group 2 第 8 项 token 上限截断~~（✅ `CTX_MAX_CHARS` 已落地）
+5. Group 2 第 7 项 ANN 索引导向暂缓：需新增 `sqlite-vec` 扩展依赖，与规则5冲突；且当前错题量级全量扫描已足够快，仅当数据达万级时再评估。
+6. Group 3 建议在当前体量落地后再考虑，暂不需要。
 
 ---
 

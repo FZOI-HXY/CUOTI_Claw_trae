@@ -32,6 +32,9 @@ const EMBED_MODEL: &str = "local:bge-small-zh-v1.5";
 pub const WEAK_SCORE: f32 = 0.30;
 /// 余弦相似度：低于该值但非空，生成后追加接地提示
 pub const GROUNDING_SCORE: f32 = 0.45;
+/// 拼给 LLM 的上下文最大字符数（近似 token 上限，防止成本爆炸/超窗）
+/// 中文场景 1 字 ≈ 1 token，取保守上限。
+pub const CTX_MAX_CHARS: usize = 8000;
 
 /// 计算升序分数样本的百分位（p ∈ [0,100]），线性插值。
 /// 用于基于真实相似度分布校准 WEAK_SCORE / GROUNDING_SCORE。
@@ -379,18 +382,32 @@ async fn answer_from_sources(
 
     let mut ctx = String::new();
     for (i, s) in sources.iter().enumerate() {
-        ctx.push_str(&format!("[{}] 题目: {}\n", i + 1, s.title));
+        let mut block = format!("[{}] 题目: {}\n", i + 1, s.title);
         if let Some(q) = qmap.get(&s.question_id) {
             if let Some(opt) = &q.options {
-                ctx.push_str(&format!("   选项: {}\n", opt));
+                block.push_str(&format!("   选项: {}\n", opt));
             }
             if let Some(ans) = &q.answer {
-                ctx.push_str(&format!("   参考答案: {}\n", ans));
+                block.push_str(&format!("   参考答案: {}\n", ans));
             }
             if let Some(an) = &q.analysis {
-                ctx.push_str(&format!("   解析: {}\n", an));
+                block.push_str(&format!("   解析: {}\n", an));
             }
         }
+        // 上下文窗口/成本控制：累计超过上限即停止追加，避免超窗或 token 爆炸
+        let remaining = CTX_MAX_CHARS.saturating_sub(ctx.chars().count());
+        if remaining == 0 {
+            break;
+        }
+        if block.chars().count() > remaining {
+            // 首条来源即使超长也截断纳入，保证至少有一条相关上下文；其余直接跳过
+            if ctx.is_empty() {
+                let truncated: String = block.chars().take(remaining).collect();
+                ctx.push_str(&truncated);
+            }
+            break;
+        }
+        ctx.push_str(&block);
     }
     let mut answer = cleaner.ask(question, &ctx).await?;
 
@@ -1005,6 +1022,62 @@ mod tests {
         let ans = ask(&state, &embedder, &cleaner, "问题", 5).await.expect("ask");
         assert!(ans.answer.contains("标准答案XYZ"), "上下文应包含答案: {}", ans.answer);
         assert!(ans.answer.contains("解析要点ABC"), "上下文应包含解析: {}", ans.answer);
+    }
+
+    #[tokio::test]
+    async fn test_ask_context_truncates_at_char_limit() {
+        let pool = db::init_db(None).await.expect("memory db");
+        let state = AppState::new(pool);
+        let subj = crate::commands::subject::create_subject(&state, "数学".into())
+            .await
+            .expect("subj");
+        // 每个来源都带有超长解析，足以单条就超上限
+        let mut _ids = Vec::new();
+        for _ in 0..3 {
+            let ans = crate::commands::question::create_question(
+                &state,
+                QuestionInput {
+                    subject_id: subj.id,
+                    chapter_id: None,
+                    qtype: Some("single".into()),
+                    title: "题".into(),
+                    options: None,
+                    answer: Some("a".into()),
+                    analysis: Some("解".repeat(CTX_MAX_CHARS + 100)),
+                    difficulty: Some(2),
+                    status: None,
+                    notes: None,
+                    is_favorite: None,
+                    image_path: None,
+                    source: None,
+                    wrong_reason: None,
+                    tags: None,
+                },
+            )
+            .await
+            .expect("create")
+            .id;
+            sqlx::query(
+                "INSERT OR REPLACE INTO question_embeddings (question_id, model, vector, updated_at)
+                 VALUES (?,?,?,datetime('now','localtime'))",
+            )
+            .bind(ans)
+            .bind(EMBED_MODEL)
+            .bind(encode_vec(&vec![1.0f32, 0.02f32]))
+            .execute(&state.pool)
+            .await
+            .expect("insert vec");
+            _ids.push(ans);
+        }
+        let cleaner = MockCleaner;
+        let embedder = QueryEmbedder { qvec: vec![1.0, 0.0] };
+        let ans = ask(&state, &embedder, &cleaner, "问题", 5).await.expect("ask");
+        // 上下文不得超过上限（ctx 里含答案/解析，超长解析会被截断）
+        let ctx = ans.answer.clone();
+        let ctx_part = ctx.split("| ctx: ").nth(1).unwrap_or("");
+        assert!(ctx_part.chars().count() <= CTX_MAX_CHARS + 200, "应截断到上限附近");
+        // 至少返回了来源
+        assert!(!ans.sources.is_empty());
     }
 
     #[test]
