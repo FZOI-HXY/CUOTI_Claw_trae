@@ -36,5 +36,6 @@
 
 - 现状接口保持稳定：`retrieve` 签名、`RagSource`/`RagAnswer` 结构、前端均不变；自检信号通过 `answer` 文本透出。
 - 不新增第三方依赖（当前）。
-- **后续方向（本轮不实现，仅记录）**：可基于成本/收益评估引入 cross-encoder 重排、Adaptive 查询路由、HyDE 等进阶手段；一旦引入需重新评估依赖与接口约束。
+- **已落地**：cross-encoder 重排（借助已内置 fastembed 的 `TextRerank`/bge-reranker-base，`ask` 走 `ask_with_rerank` 精排，`retrieve` 签名不变，新增 `rerank_sources`）。
+- **后续方向（本轮不实现，仅记录）**：可基于成本/收益评估引入 Adaptive 查询路由、HyDE 等进阶手段；一旦引入需重新评估依赖与接口约束。
 - 混合检索（hybrid.rs：BM25 + RRF）与元信息关键词文本（question_keyword_text）为核心，后续优化需保持接口稳定。

@@ -3,7 +3,7 @@
 
 use crate::commands::question;
 use crate::commands::AppState;
-use crate::embedder::{cosine_similarity, decode_vec, encode_vec, top_k_scores, Embedder};
+use crate::embedder::{cosine_similarity, decode_vec, encode_vec, top_k_scores, Embedder, Reranker};
 use crate::error::Result;
 use crate::hybrid;
 use crate::models::{QuestionFilter, RagAnswer, RagSource};
@@ -302,6 +302,58 @@ pub async fn ask(
     top_k: usize,
 ) -> Result<RagAnswer> {
     let sources = retrieve(state, embedder, question, top_k).await?;
+    answer_from_sources(state, cleaner, question, sources).await
+}
+
+/// 问答主流程 + cross-encoder 重排：先检索，再对 top-k 精排后生成。
+/// 与 `ask` 共享生成/自检逻辑，仅在检索后插入重排步骤。
+pub async fn ask_with_rerank(
+    state: &AppState,
+    embedder: &dyn Embedder,
+    reranker: &dyn Reranker,
+    cleaner: &dyn crate::cleaner::Cleaner,
+    question: &str,
+    top_k: usize,
+) -> Result<RagAnswer> {
+    let sources = retrieve(state, embedder, question, top_k).await?;
+    let sources = rerank_sources(state, reranker, question, sources).await?;
+    answer_from_sources(state, cleaner, question, sources).await
+}
+
+/// 对检索结果做 cross-encoder 精排：按重排分数降序重排 sources。
+/// 保留每条 source 原始的 score（余弦），仅调整顺序，供自检阈值与前端展示保持稳定。
+pub async fn rerank_sources(
+    state: &AppState,
+    reranker: &dyn Reranker,
+    query: &str,
+    sources: Vec<RagSource>,
+) -> Result<Vec<RagSource>> {
+    if sources.len() < 2 {
+        return Ok(sources);
+    }
+    let ids: Vec<i64> = sources.iter().map(|s| s.question_id).collect();
+    let qmap = question::get_by_ids(state, &ids).await?;
+    let docs: Vec<String> = sources
+        .iter()
+        .filter_map(|s| qmap.get(&s.question_id).map(question_keyword_text))
+        .collect();
+    if docs.len() != sources.len() {
+        // 有来源题缺失，退回原顺序
+        return Ok(sources);
+    }
+    let scores = reranker.rerank(query, &docs).await?;
+    let mut ranked: Vec<(RagSource, f32)> = sources.into_iter().zip(scores).collect();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(ranked.into_iter().map(|(s, _)| s).collect())
+}
+
+/// 检索结果 → 生成回答（含弱相关短路与接地提示），供 `ask` / `ask_with_rerank` 复用
+async fn answer_from_sources(
+    state: &AppState,
+    cleaner: &dyn crate::cleaner::Cleaner,
+    question: &str,
+    sources: Vec<RagSource>,
+) -> Result<RagAnswer> {
     if sources.is_empty() {
         return Ok(RagAnswer {
             answer: "没有检索到相关题目。请先建立索引，或换个问法。".into(),
@@ -397,6 +449,18 @@ mod tests {
         }
         async fn ask(&self, question: &str, context: &str) -> Result<String> {
             Ok(format!("answer for: {} | ctx: {}", question, context))
+        }
+    }
+
+    /// 确定性 mock 重排器：按文档长度反向打分（越短越相关），便于构造可控顺序
+    struct MockReranker;
+    #[async_trait]
+    impl Reranker for MockReranker {
+        async fn rerank(&self, _query: &str, documents: &[String]) -> Result<Vec<f32>> {
+            Ok(documents
+                .iter()
+                .map(|d| -(d.chars().count() as f32))
+                .collect())
         }
     }
 
@@ -989,5 +1053,110 @@ mod tests {
         assert_eq!(recall_at_k(&[], &retrieved), 0.0);
         // 检索结果为空 → 0
         assert_eq!(recall_at_k(&truth, &[]), 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_rerank_sources_reorders_shortest_first() {
+        let pool = db::init_db(None).await.expect("memory db");
+        let state = AppState::new(pool);
+        let subj = crate::commands::subject::create_subject(&state, "数学".into())
+            .await
+            .expect("subj");
+        // 长标题题（score 高但文档长 → 重排分数低）
+        let long = crate::commands::question::create_question(
+            &state,
+            QuestionInput {
+                subject_id: subj.id,
+                chapter_id: None,
+                qtype: Some("single".into()),
+                title: "这是一个非常非常长的题干标题用来拉低重排分数".into(),
+                options: None,
+                answer: None,
+                analysis: None,
+                difficulty: Some(2),
+                status: None,
+                notes: None,
+                is_favorite: None,
+                image_path: None,
+                source: None,
+                wrong_reason: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("long")
+        .id;
+        let short = crate::commands::question::create_question(
+            &state,
+            QuestionInput {
+                subject_id: subj.id,
+                chapter_id: None,
+                qtype: Some("single".into()),
+                title: "短题".into(),
+                options: None,
+                answer: None,
+                analysis: None,
+                difficulty: Some(2),
+                status: None,
+                notes: None,
+                is_favorite: None,
+                image_path: None,
+                source: None,
+                wrong_reason: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("short")
+        .id;
+        let sources = vec![
+            RagSource { question_id: long, title: "长题".into(), score: 0.9 },
+            RagSource { question_id: short, title: "短题".into(), score: 0.8 },
+        ];
+        let reranked = rerank_sources(&state, &MockReranker, "q", sources)
+            .await
+            .expect("rerank");
+        assert_eq!(reranked[0].question_id, short, "短题应因文档短而排第一");
+        assert_eq!(reranked[1].question_id, long, "长题应排第二");
+        // score 保持不变（仅调整顺序）
+        assert!((reranked[0].score - 0.8).abs() < 1e-6);
+        assert!((reranked[1].score - 0.9).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn test_rerank_sources_single_or_empty_unchanged() {
+        let pool = db::init_db(None).await.expect("memory db");
+        let state = AppState::new(pool);
+        // 空列表
+        let empty = rerank_sources(&state, &MockReranker, "q", vec![])
+            .await
+            .expect("empty");
+        assert!(empty.is_empty());
+        // 单条：无需重排，原样返回
+        let single = rerank_sources(
+            &state,
+            &MockReranker,
+            "q",
+            vec![RagSource { question_id: 1, title: "x".into(), score: 0.5 }],
+        )
+        .await
+        .expect("single");
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].question_id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_ask_with_rerank_uses_reranked_order() {
+        let (state, _q1, _q2) = setup_state().await;
+        let embedder = MockEmbedder { dim: 8 };
+        index_all(&state, &embedder).await.expect("index");
+        let cleaner = MockCleaner;
+        let ans = ask_with_rerank(&state, &embedder, &MockReranker, &cleaner, "如何解二次方程", 2)
+            .await
+            .expect("ask_with_rerank");
+        assert!(ans.answer.starts_with("answer for:"));
+        assert!(!ans.sources.is_empty());
+        // 上下文沿用重排后的来源顺序
+        assert_eq!(ans.sources.len(), 2);
     }
 }

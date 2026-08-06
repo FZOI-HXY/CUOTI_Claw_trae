@@ -22,7 +22,15 @@ pub async fn ask(state: &AppState, question: String, top_k: Option<usize>) -> Re
     }
     let llm_cfg = config::get_llm_config(state).await?;
     let cleaner = LlmCleaner::new(&llm_cfg);
-    rag::ask(state, embedder::local_embedder().await?, &cleaner, &question, top_k).await
+    rag::ask_with_rerank(
+        state,
+        embedder::local_embedder().await?,
+        embedder::local_reranker().await?,
+        &cleaner,
+        &question,
+        top_k,
+    )
+    .await
 }
 
 /// 为所有错题建立向量索引，返回索引数量

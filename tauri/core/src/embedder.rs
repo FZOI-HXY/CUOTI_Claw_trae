@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{
+    EmbeddingModel, InitOptions, RerankInitOptions, RerankerModel, TextEmbedding, TextRerank,
+};
 use tokio::sync::OnceCell;
 
 use crate::error::{Error, Result};
@@ -56,6 +58,64 @@ impl Embedder for LocalEmbedder {
     fn dim(&self) -> usize {
         self.dim
     }
+}
+
+/// 交叉编码重排抽象：对 query 与候选文档打分排序（cross-encoder）
+#[async_trait]
+pub trait Reranker: Send + Sync {
+    /// 返回与 documents 一一对应的相关性分数（越高越相关）
+    async fn rerank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>>;
+}
+
+/// 本地 fastembed 重排实现（bge-reranker-base，中英双语，CPU/ONNX）
+pub struct LocalReranker {
+    model: Arc<TextRerank>,
+}
+
+impl LocalReranker {
+    pub async fn new() -> Result<Self> {
+        let model = tokio::task::spawn_blocking(|| {
+            TextRerank::try_new(RerankInitOptions::new(RerankerModel::BGERerankerBase))
+                .map_err(|e| Error::Cleaner(format!("加载重排模型失败: {}", e)))
+        })
+        .await
+        .map_err(|e| Error::Cleaner(format!("重排模型线程失败: {}", e)))??;
+        Ok(Self {
+            model: Arc::new(model),
+        })
+    }
+}
+
+#[async_trait]
+impl Reranker for LocalReranker {
+    async fn rerank(&self, query: &str, documents: &[String]) -> Result<Vec<f32>> {
+        let model = Arc::clone(&self.model);
+        let query = query.to_string();
+        let documents = documents.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let results = model
+                .rerank(query, documents.clone(), false, None)
+                .map_err(|e| Error::Cleaner(format!("重排失败: {}", e)))?;
+            // fastembed 返回按分数降序的索引结果，需还原为与原文档对应的顺序
+            let mut scores = vec![0.0f32; documents.len()];
+            for r in &results {
+                if r.index < scores.len() {
+                    scores[r.index] = r.score;
+                }
+            }
+            Ok(scores)
+        })
+        .await
+        .map_err(|e| Error::Cleaner(format!("重排线程失败: {}", e)))?
+    }
+}
+
+/// 全局单例：整个应用只加载一次本地重排模型
+static LOCAL_RERANKER: OnceCell<LocalReranker> = OnceCell::const_new();
+
+/// 获取本地重排器单例（懒加载）
+pub async fn local_reranker() -> Result<&'static LocalReranker> {
+    LOCAL_RERANKER.get_or_try_init(LocalReranker::new).await
 }
 
 /// 全局单例：整个应用只加载一次本地模型
