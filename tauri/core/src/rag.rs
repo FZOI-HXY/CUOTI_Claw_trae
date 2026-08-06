@@ -27,6 +27,11 @@ fn question_text(q: &crate::models::Question) -> String {
 /// 嵌入模型标识
 const EMBED_MODEL: &str = "local:bge-small-zh-v1.5";
 
+/// 余弦相似度：低于该值视为「相关性弱」，检索后可短路不调 LLM
+pub const WEAK_SCORE: f32 = 0.30;
+/// 余弦相似度：低于该值但非空，生成后追加接地提示
+pub const GROUNDING_SCORE: f32 = 0.45;
+
 /// 增量索引结果
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct IndexSummary {
@@ -231,11 +236,28 @@ pub async fn ask(
         });
     }
 
+    // 自检1：全部来源相关性弱 → 短路，不浪费 LLM 调用
+    let max_score = sources.iter().map(|s| s.score).fold(0.0f32, f32::max);
+    if max_score < WEAK_SCORE {
+        return Ok(RagAnswer {
+            answer: format!(
+                "检索到 {} 道相关题目，但与问题相关性较低，以下题目仅供参考，可能无法给出准确解答。",
+                sources.len()
+            ),
+            sources,
+        });
+    }
+
     let mut ctx = String::new();
     for (i, s) in sources.iter().enumerate() {
         ctx.push_str(&format!("[{}] 题目: {}\n", i + 1, s.title));
     }
-    let answer = cleaner.ask(question, &ctx).await?;
+    let mut answer = cleaner.ask(question, &ctx).await?;
+
+    // 自检2：首条来源相关性一般 → 追加接地提示
+    if sources[0].score < GROUNDING_SCORE {
+        answer.push_str("（提示：检索到的相关题目相关性一般，以上回答仅供参考，建议确认题目原文。）");
+    }
     Ok(RagAnswer { answer, sources })
 }
 
@@ -252,6 +274,8 @@ mod tests {
     use crate::db;
     use crate::models::QuestionInput;
     use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     /// 确定性 mock 嵌入器：第 i 个文本在维度 i 置 1，其余 0
     struct MockEmbedder {
@@ -284,6 +308,21 @@ mod tests {
             unimplemented!()
         }
         async fn ask(&self, question: &str, context: &str) -> Result<String> {
+            Ok(format!("answer for: {} | ctx: {}", question, context))
+        }
+    }
+
+    /// 记录 ask 调用次数的 cleaner，用于验证弱相关性短路逻辑
+    struct CountingCleaner {
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl Cleaner for CountingCleaner {
+        async fn clean(&self, _ocr: &str) -> Result<crate::models::CleanedQuestion> {
+            unimplemented!()
+        }
+        async fn ask(&self, question: &str, context: &str) -> Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(format!("answer for: {} | ctx: {}", question, context))
         }
     }
@@ -646,5 +685,57 @@ mod tests {
         let scores = hybrid::bm25_scores(&docs, "填空");
         let (top_id, _) = scores.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).expect("non-empty");
         assert_eq!(*top_id, 2, "应按题型元信息召回 doc2");
+    }
+
+    #[tokio::test]
+    async fn test_ask_short_circuits_on_weak_relevance() {
+        let pool = db::init_db(None).await.expect("memory db");
+        let state = AppState::new(pool);
+        let subj = crate::commands::subject::create_subject(&state, "数学".into())
+            .await
+            .expect("subj");
+        let qid = crate::commands::question::create_question(
+            &state,
+            QuestionInput {
+                subject_id: subj.id,
+                chapter_id: None,
+                qtype: Some("single".into()),
+                title: "勾股定理".into(),
+                options: None,
+                answer: Some("a^2+b^2=c^2".into()),
+                analysis: None,
+                difficulty: Some(2),
+                status: None,
+                notes: None,
+                is_favorite: None,
+                image_path: None,
+                source: None,
+                wrong_reason: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("create")
+        .id;
+        // 手工写入与查询向量近乎正交的向量 → 余弦≈0.05，介于 (0, WEAK_SCORE) 之间，
+        // 既能通过 retrieve 的 score>0 过滤，又低于 WEAK_SCORE 触发短路
+        sqlx::query(
+            "INSERT OR REPLACE INTO question_embeddings (question_id, model, vector, updated_at)
+             VALUES (?,?,?,datetime('now','localtime'))",
+        )
+        .bind(qid)
+        .bind(EMBED_MODEL)
+        .bind(encode_vec(&vec![0.05f32, 1.0, 0.0]))
+        .execute(&state.pool)
+        .await
+        .expect("insert vec");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cleaner = CountingCleaner { calls: Arc::clone(&calls) };
+        let embedder = QueryEmbedder { qvec: vec![1.0, 0.0, 0.0] };
+        let ans = ask(&state, &embedder, &cleaner, "随便问问", 5).await.expect("ask");
+        assert!(ans.answer.contains("相关性较低"), "应命中弱相关性分支: {}", ans.answer);
+        assert!(ans.sources.iter().any(|s| s.question_id == qid), "来源列表应返回");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "弱相关性不应调用 LLM");
     }
 }
