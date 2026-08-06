@@ -738,4 +738,73 @@ mod tests {
         assert!(ans.sources.iter().any(|s| s.question_id == qid), "来源列表应返回");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "弱相关性不应调用 LLM");
     }
+
+    /// 构造一道题并写入给定向量，返回其 id
+    async fn insert_question_with_vec(
+        state: &AppState,
+        title: &str,
+        vec: Vec<f32>,
+    ) -> i64 {
+        let subj = crate::commands::subject::create_subject(state, "数学".into())
+            .await
+            .expect("subj");
+        let qid = crate::commands::question::create_question(
+            state,
+            QuestionInput {
+                subject_id: subj.id,
+                chapter_id: None,
+                qtype: Some("single".into()),
+                title: title.into(),
+                options: None,
+                answer: Some("ans".into()),
+                analysis: None,
+                difficulty: Some(2),
+                status: None,
+                notes: None,
+                is_favorite: None,
+                image_path: None,
+                source: None,
+                wrong_reason: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("create")
+        .id;
+        sqlx::query(
+            "INSERT OR REPLACE INTO question_embeddings (question_id, model, vector, updated_at)
+             VALUES (?,?,?,datetime('now','localtime'))",
+        )
+        .bind(qid)
+        .bind(EMBED_MODEL)
+        .bind(encode_vec(&vec))
+        .execute(&state.pool)
+        .await
+        .expect("insert vec");
+        qid
+    }
+
+    #[tokio::test]
+    async fn test_ask_appends_grounding_hint_on_medium_relevance() {
+        let pool = db::init_db(None).await.expect("memory db");
+        let state = AppState::new(pool);
+        // 余弦 = dot(a,b)/(|a||b|)，a=[1,0], b=[0.35,1] → 0.35/√(1+0.1225)≈0.33，介于 WEAK 与 GROUNDING 之间
+        insert_question_with_vec(&state, "题目A", vec![0.35f32, 1.0]).await;
+        let cleaner = MockCleaner;
+        let embedder = QueryEmbedder { qvec: vec![1.0, 0.0] };
+        let ans = ask(&state, &embedder, &cleaner, "问题", 5).await.expect("ask");
+        assert!(ans.answer.ends_with("建议确认题目原文。）"), "应追加接地提示: {}", ans.answer);
+    }
+
+    #[tokio::test]
+    async fn test_ask_no_hint_on_strong_relevance() {
+        let pool = db::init_db(None).await.expect("memory db");
+        let state = AppState::new(pool);
+        insert_question_with_vec(&state, "题目B", vec![1.0f32, 0.0]).await;
+        let cleaner = MockCleaner;
+        let embedder = QueryEmbedder { qvec: vec![1.0, 0.0] };
+        let ans = ask(&state, &embedder, &cleaner, "问题", 5).await.expect("ask");
+        assert!(!ans.answer.contains("建议确认题目原文"), "强相关不应有提示: {}", ans.answer);
+        assert!(ans.answer.starts_with("answer for:"), "应正常生成");
+    }
 }
