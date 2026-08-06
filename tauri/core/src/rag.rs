@@ -175,6 +175,46 @@ pub async fn retrieve(
     Ok(out)
 }
 
+/// 拼接含元信息的题目文本，用于关键词(BM25)检索。
+/// 与 question_text（向量嵌入）分离：仅关键词路径使用，避免改变存量向量。
+fn question_keyword_text(q: &crate::models::Question) -> String {
+    let mut parts = vec![q.title.clone()];
+    if let Some(o) = &q.options {
+        parts.push(o.clone());
+    }
+    if let Some(a) = &q.answer {
+        parts.push(a.clone());
+    }
+    if let Some(an) = &q.analysis {
+        parts.push(an.clone());
+    }
+    if let Some(s) = &q.subject_name {
+        parts.push(s.clone());
+    }
+    if let Some(c) = &q.chapter_name {
+        parts.push(c.clone());
+    }
+    parts.push(qtype_label(&q.qtype).to_string());
+    if let Some(tags) = &q.tags {
+        for t in tags {
+            parts.push(t.clone());
+        }
+    }
+    parts.join("\n")
+}
+
+/// 题型中文标签（用于关键词检索）
+fn qtype_label(qtype: &str) -> &'static str {
+    match qtype {
+        "single" => "单选",
+        "multiple" => "多选",
+        "judge" => "判断",
+        "fill" => "填空",
+        "answer" => "解答",
+        _ => "题目",
+    }
+}
+
 /// RAG 问答主流程
 pub async fn ask(
     state: &AppState,
@@ -526,5 +566,49 @@ mod tests {
             hits.iter().any(|s| s.question_id == q3),
             "关键词精确匹配题应被混合检索召回"
         );
+    }
+
+    #[test]
+    fn test_question_keyword_text_includes_metadata() {
+        let q = crate::models::Question {
+            id: 1,
+            subject_id: 1,
+            chapter_id: Some(2),
+            qtype: "single".into(),
+            title: "勾股定理".into(),
+            options: None,
+            answer: Some("a^2+b^2=c^2".into()),
+            analysis: Some("直角三角形".into()),
+            difficulty: 2,
+            status: "not_mastered".into(),
+            wrong_count: 0,
+            notes: None,
+            is_favorite: false,
+            image_path: None,
+            source: None,
+            wrong_reason: None,
+            last_reviewed_at: None,
+            created_at: "".into(),
+            updated_at: "".into(),
+            subject_name: Some("数学".into()),
+            chapter_name: Some("几何 · 三角形".into()),
+            tags: Some(vec!["重点".into(), "常考".into()]),
+        };
+        let text = question_keyword_text(&q);
+        assert!(text.contains("数学"), "应包含科目名");
+        assert!(text.contains("几何 · 三角形"), "应包含章节名");
+        assert!(text.contains("单选"), "应包含题型中文标签");
+        assert!(text.contains("重点"), "应包含标签");
+        assert!(text.contains("勾股定理"), "应包含题干");
+    }
+
+    #[test]
+    fn test_qtype_label_maps_all_types() {
+        assert_eq!(qtype_label("single"), "单选");
+        assert_eq!(qtype_label("multiple"), "多选");
+        assert_eq!(qtype_label("judge"), "判断");
+        assert_eq!(qtype_label("fill"), "填空");
+        assert_eq!(qtype_label("answer"), "解答");
+        assert_eq!(qtype_label("unknown"), "题目");
     }
 }
