@@ -63,6 +63,20 @@ pub fn suggest_thresholds(samples: &[f32]) -> (f32, f32) {
     (weak.min(grounding).clamp(0.0, 1.0), grounding.clamp(0.0, 1.0))
 }
 
+/// 召回率@k：检索结果中命中的真实相关题数 / 真实相关题总数。
+/// 用于量化最小化检索评估（Group 1.5 第 5.1 项）。
+pub fn recall_at_k(ground_truth: &[i64], retrieved: &[RagSource]) -> f32 {
+    if ground_truth.is_empty() {
+        return 0.0;
+    }
+    let truth: std::collections::HashSet<i64> = ground_truth.iter().copied().collect();
+    let hit = retrieved
+        .iter()
+        .filter(|s| truth.contains(&s.question_id))
+        .count();
+    hit as f32 / ground_truth.len() as f32
+}
+
 /// 增量索引结果
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct IndexSummary {
@@ -948,5 +962,32 @@ mod tests {
         let (weak, grounding) = suggest_thresholds(&samples);
         assert!(weak <= grounding, "weak 不应超过 grounding: {} > {}", weak, grounding);
         assert!(weak >= 0.0 && grounding <= 1.0);
+    }
+
+    #[test]
+    fn test_recall_at_k_full_hit_in_top_k() {
+        // 3 条真实相关，检索 top-5 全命中 → recall = 1.0
+        let truth = vec![10, 20, 30];
+        let retrieved = vec![
+            RagSource { question_id: 10, title: "a".into(), score: 0.9 },
+            RagSource { question_id: 20, title: "b".into(), score: 0.8 },
+            RagSource { question_id: 30, title: "c".into(), score: 0.7 },
+        ];
+        assert!((recall_at_k(&truth, &retrieved) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_recall_at_k_partial_and_empty() {
+        // 命中 1/4
+        let truth = vec![1, 2, 3, 4];
+        let retrieved = vec![
+            RagSource { question_id: 1, title: "a".into(), score: 0.9 },
+            RagSource { question_id: 99, title: "b".into(), score: 0.8 },
+        ];
+        assert!((recall_at_k(&truth, &retrieved) - 0.25).abs() < 1e-6);
+        // 真实相关为空 → 0
+        assert_eq!(recall_at_k(&[], &retrieved), 0.0);
+        // 检索结果为空 → 0
+        assert_eq!(recall_at_k(&truth, &[]), 0.0);
     }
 }
