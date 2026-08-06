@@ -11,6 +11,7 @@ pub mod cleaner;
 pub mod db;
 pub mod embedder;
 pub mod error;
+pub mod hybrid;
 pub mod meta;
 pub mod models;
 pub mod ocr;

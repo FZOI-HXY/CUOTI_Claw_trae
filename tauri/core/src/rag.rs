@@ -5,7 +5,9 @@ use crate::commands::question;
 use crate::commands::AppState;
 use crate::embedder::{cosine_similarity, decode_vec, encode_vec, top_k_scores, Embedder};
 use crate::error::Result;
+use crate::hybrid;
 use crate::models::{QuestionFilter, RagAnswer, RagSource};
+use std::collections::HashMap;
 
 /// 拼接题目文本作为嵌入输入
 fn question_text(q: &crate::models::Question) -> String {
@@ -109,27 +111,55 @@ pub async fn retrieve(
     query: &str,
     top_k: usize,
 ) -> Result<Vec<RagSource>> {
+    // 1. 向量召回
     let qvec = match embedder.embed(&[query.to_string()]).await {
         Ok(mut v) if !v.is_empty() => v.remove(0),
         _ => return Ok(Vec::new()),
     };
-
     let rows = sqlx::query_as::<_, EmbeddingRow>("SELECT question_id, vector FROM question_embeddings")
         .fetch_all(&state.pool)
         .await?;
-
-    let scores: Vec<(i64, f32)> = rows
+    let vector_scores: Vec<(i64, f32)> = rows
         .into_iter()
         .map(|r| {
             let vec = decode_vec(&r.vector);
             (r.question_id, cosine_similarity(&qvec, &vec))
         })
         .collect();
+    let vector_top = top_k_scores(vector_scores.clone(), top_k);
 
-    let top = top_k_scores(scores, top_k);
+    // 2. 关键词召回（BM25 式，无额外存储，查询时对题目文本实时打分）
+    let questions = question::list_questions(state, &QuestionFilter::default()).await?;
+    let docs: Vec<(i64, String)> = questions
+        .iter()
+        .map(|q| (q.id, question_text(q)))
+        .collect();
+    let keyword_scores = hybrid::bm25_scores(&docs, query);
+    let keyword_top = top_k_scores(
+        keyword_scores.into_iter().filter(|(_, s)| *s > 0.0).collect(),
+        top_k,
+    );
 
+    // 3. RRF 融合排序（关键词命中的题可被排到向量榜单之前）
+    let mut fused = hybrid::rrf_fuse(&[vector_top, keyword_top], 60.0);
+    let cosine_map: HashMap<i64, f32> = vector_scores.into_iter().collect();
+    // RRF 同分时用向量余弦作次级排序键，保证语义更相关的排在前面
+    fused.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                cosine_map
+                    .get(&b.0)
+                    .unwrap_or(&0.0)
+                    .partial_cmp(cosine_map.get(&a.0).unwrap_or(&0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    // 4. 组装结果：顺序按融合排序，score 保留向量余弦（供前端展示）
     let mut out = Vec::new();
-    for (qid, score) in top {
+    for (qid, _) in fused {
+        let score = *cosine_map.get(&qid).unwrap_or(&0.0);
         if score <= 0.0 {
             continue;
         }
@@ -141,6 +171,7 @@ pub async fn retrieve(
             });
         }
     }
+    out.truncate(top_k);
     Ok(out)
 }
 
@@ -214,6 +245,20 @@ mod tests {
         }
         async fn ask(&self, question: &str, context: &str) -> Result<String> {
             Ok(format!("answer for: {} | ctx: {}", question, context))
+        }
+    }
+
+    /// 固定查询向量嵌入器：任何输入都返回同一查询向量
+    struct QueryEmbedder {
+        qvec: Vec<f32>,
+    }
+    #[async_trait]
+    impl Embedder for QueryEmbedder {
+        async fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            Ok(vec![self.qvec.clone()])
+        }
+        fn dim(&self) -> usize {
+            self.qvec.len()
         }
     }
 
@@ -370,5 +415,116 @@ mod tests {
         .await
         .expect("create q3")
         .id
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_retrieval_surfaces_keyword_exact_match() {
+        // 构造：q1、q2 向量相似度高，q3 向量分低（0.05），但 q3 是关键词精确匹配项。
+        // 纯向量 top2 应只返回 [q1, q2]；混合检索应靠 BM25 把 q3 召回。
+        let pool = db::init_db(None).await.expect("memory db");
+        let state = AppState::new(pool);
+        let subj = crate::commands::subject::create_subject(&state, "数学".into())
+            .await
+            .expect("subj");
+        let q1 = crate::commands::question::create_question(
+            &state,
+            QuestionInput {
+                subject_id: subj.id,
+                chapter_id: None,
+                qtype: Some("single".into()),
+                title: "三角函数 弧度".into(),
+                options: None,
+                answer: Some("sin".into()),
+                analysis: None,
+                difficulty: Some(2),
+                status: None,
+                notes: None,
+                is_favorite: None,
+                image_path: None,
+                source: None,
+                wrong_reason: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("create q1")
+        .id;
+        let q2 = crate::commands::question::create_question(
+            &state,
+            QuestionInput {
+                subject_id: subj.id,
+                chapter_id: None,
+                qtype: Some("single".into()),
+                title: "指数函数 对数".into(),
+                options: None,
+                answer: Some("e".into()),
+                analysis: None,
+                difficulty: Some(2),
+                status: None,
+                notes: None,
+                is_favorite: None,
+                image_path: None,
+                source: None,
+                wrong_reason: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("create q2")
+        .id;
+        let q3 = crate::commands::question::create_question(
+            &state,
+            QuestionInput {
+                subject_id: subj.id,
+                chapter_id: None,
+                qtype: Some("single".into()),
+                title: "勾股定理 直角边".into(),
+                options: None,
+                answer: Some("a^2+b^2=c^2".into()),
+                analysis: None,
+                difficulty: Some(2),
+                status: None,
+                notes: None,
+                is_favorite: None,
+                image_path: None,
+                source: None,
+                wrong_reason: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("create q3")
+        .id;
+
+        // 手工写入向量以精确控制相似度（绕过 index_all）
+        let vecs: [(i64, Vec<f32>); 3] = [
+            (q1, vec![1.0f32, 0.0, 0.0]),
+            (q2, vec![0.9f32, 0.0, 0.0]),
+            (q3, vec![0.05f32, 0.0, 0.0]),
+        ];
+        for (id, vec) in vecs {
+            sqlx::query(
+                "INSERT OR REPLACE INTO question_embeddings (question_id, model, vector, updated_at)
+                 VALUES (?,?,?,datetime('now','localtime'))",
+            )
+            .bind(id)
+            .bind(EMBED_MODEL)
+            .bind(encode_vec(&vec))
+            .execute(&state.pool)
+            .await
+            .expect("insert vec");
+        }
+
+        let embedder = QueryEmbedder {
+            qvec: vec![1.0, 0.0, 0.0],
+        };
+        let hits = retrieve(&state, &embedder, "勾股定理", 2)
+            .await
+            .expect("retrieve");
+        // 纯向量 top2 为 [q1, q2]（q3 相似度 0.05 被挤出）；混合检索靠关键词召回 q3
+        assert!(
+            hits.iter().any(|s| s.question_id == q3),
+            "关键词精确匹配题应被混合检索召回"
+        );
     }
 }
