@@ -3,7 +3,6 @@ import type {
   Chapter,
   CleanedQuestion,
   LlmConfig,
-  OcrConfig,
   OcrDraft,
   Question,
   QuestionFilter,
@@ -60,8 +59,6 @@ export const deleteTag = (id: number) => invoke<void>("delete_tag", { id });
 export const getStats = () => invoke<Stats>("get_stats");
 
 // ---- 配置 ----
-export const getOcrConfig = () => invoke<OcrConfig>("get_ocr_config");
-export const setOcrConfig = (cfg: OcrConfig) => invoke<void>("set_ocr_config", { cfg });
 export const getLlmConfig = () => invoke<LlmConfig>("get_llm_config");
 export const setLlmConfig = (cfg: LlmConfig) => invoke<void>("set_llm_config", { cfg });
 

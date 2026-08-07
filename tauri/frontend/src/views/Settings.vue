@@ -1,13 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import * as api from "../lib/api";
-import type { LlmConfig, OcrConfig } from "../lib/types";
+import type { LlmConfig } from "../lib/types";
 
-const ocr = ref<OcrConfig>({
-  api_url: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
-  api_key: "",
-  model: "PaddleOCR-VL-1.6",
-});
 const llm = ref<LlmConfig>({
   base_url: "",
   api_key: "",
@@ -17,17 +12,7 @@ const llm = ref<LlmConfig>({
 const saving = ref(false);
 const saved = ref(false);
 
-const modelOptions = [
-  "PaddleOCR-VL-1.6",
-  "PaddleOCR-VL-1.5",
-  "PaddleOCR-VL",
-  "PP-StructureV3",
-  "PP-OCRv6",
-  "PP-OCRv5",
-];
-
 async function load() {
-  ocr.value = await api.getOcrConfig();
   llm.value = await api.getLlmConfig();
 }
 
@@ -35,7 +20,6 @@ async function save() {
   saving.value = true;
   saved.value = false;
   try {
-    await api.setOcrConfig(ocr.value);
     await api.setLlmConfig(llm.value);
     saved.value = true;
     setTimeout(() => (saved.value = false), 2000);
@@ -51,42 +35,10 @@ onMounted(load);
   <div class="max-w-2xl mx-auto p-6">
     <h1 class="text-2xl font-bold mb-6">设置</h1>
 
-    <!-- PaddleOCR 配置 -->
-    <div class="bg-white rounded-xl shadow-sm p-6 mb-6">
-      <h2 class="font-semibold mb-4">PaddleOCR 识别 API</h2>
-      <div class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">API URL</label>
-          <input
-            v-model="ocr.api_url"
-            class="w-full border border-gray-200 rounded-lg px-3 py-2"
-          />
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">API Key (Token)</label>
-          <input
-            v-model="ocr.api_key"
-            type="password"
-            class="w-full border border-gray-200 rounded-lg px-3 py-2"
-            placeholder="从百度 AI Studio 获取"
-          />
-        </div>
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">模型</label>
-          <select
-            v-model="ocr.model"
-            class="w-full border border-gray-200 rounded-lg px-3 py-2"
-          >
-            <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
-          </select>
-        </div>
-      </div>
-    </div>
-
-    <!-- LLM 清洗 (RAG) -->
+    <!-- AI 识别（多模态 LLM） -->
     <div class="bg-white rounded-xl shadow-sm p-6 mb-6">
       <div class="flex items-center justify-between mb-4">
-        <h2 class="font-semibold">LLM 清洗（RAG 增强）</h2>
+        <h2 class="font-semibold">AI 识别（多模态 LLM）</h2>
         <label class="flex items-center gap-2 text-sm">
           <input v-model="llm.enabled" type="checkbox" />
           启用
@@ -98,7 +50,7 @@ onMounted(load);
           <input
             v-model="llm.base_url"
             class="w-full border border-gray-200 rounded-lg px-3 py-2"
-            placeholder="如 https://api.deepseek.com/v1"
+            placeholder="如 https://open.bigmodel.cn/api/paas/v4"
           />
         </div>
         <div>
@@ -114,11 +66,11 @@ onMounted(load);
           <input
             v-model="llm.model"
             class="w-full border border-gray-200 rounded-lg px-3 py-2"
-            placeholder="如 deepseek-chat"
+            placeholder="如 glm-4.5-air"
           />
         </div>
         <p class="text-xs text-gray-400">
-          启用后，OCR 识别结果会通过 LLM 清洗为结构化错题，自动填充表单。未配置时直接使用 OCR 原始输出。
+          启用后，可通过「AI 识别」把图片直接交给多模态大模型识别，自动填充错题表单。
         </p>
       </div>
     </div>

@@ -251,7 +251,7 @@ onMounted(async () => {
           class="px-3 py-1 text-sm bg-brand-50 text-brand-600 rounded hover:bg-brand-100"
           @click="handleFileSelect"
         >
-          {{ ocrLoading ? "识别中…" : "📷 OCR 识别" }}
+          {{ ocrLoading ? "识别中…" : "✨ AI 识别" }}
         </button>
       </div>
       <textarea

@@ -1,55 +1,40 @@
-//! OCR + LLM 清洗编排命令
-//! 图片 → PaddleOCR-VL(结构化 Markdown) → [可选] LLM 清洗 → 错题草稿
+//! 多模态 AI 识别命令
+//! 图片 → 多模态 LLM 直接输出结构化错题 JSON
 
 use crate::cleaner::{Cleaner, LlmCleaner};
 use crate::error::Result;
 use crate::models::{CleanedQuestion, OcrDraft};
-use crate::ocr::PaddleOcrService;
 
 use super::{config, AppState};
 
-/// 识别图片并返回错题草稿（含可选 LLM 清洗）
+/// 识别图片：直接把图片喂给多模态 LLM，输出结构化错题草稿
 pub async fn recognize_image(
     state: &AppState,
     image_data: Vec<u8>,
     filename: String,
 ) -> Result<OcrDraft> {
-    let ocr_cfg = config::get_ocr_config(state).await?;
-    config::ensure_configured(&ocr_cfg)?;
-
-    let service = PaddleOcrService::new(ocr_cfg.api_url, ocr_cfg.api_key, Some(ocr_cfg.model));
-    let ocr_result = service.submit_and_poll(image_data, &filename).await?;
-
-    if !ocr_result.success {
+    let llm_cfg = config::get_llm_config(state).await?;
+    if !llm_cfg.enabled {
         return Ok(OcrDraft {
-            raw_text: ocr_result.markdown_text,
+            raw_text: String::new(),
             cleaned: None,
-            error: ocr_result.error,
+            error: Some("AI 识别未启用，请在设置中开启".into()),
         });
     }
 
-    let raw_text = ocr_result.markdown_text;
-
-    // 可选 LLM 清洗
-    let llm_cfg = config::get_llm_config(state).await?;
-    let (cleaned, llm_error) = if llm_cfg.enabled {
-        let cleaner = LlmCleaner::new(&llm_cfg);
-        match cleaner.clean(&raw_text).await {
-            Ok(c) => (Some(c), None),
-            Err(e) => {
-                // 清洗失败降级为原始 OCR 输出
-                (None, Some(format!("LLM 清洗失败，已使用原始 OCR 结果: {}", e)))
-            }
-        }
-    } else {
-        (None, None)
-    };
-
-    Ok(OcrDraft {
-        raw_text,
-        cleaned,
-        error: llm_error,
-    })
+    let cleaner = LlmCleaner::new(&llm_cfg);
+    match cleaner.clean_image(&image_data, &filename).await {
+        Ok(cleaned) => Ok(OcrDraft {
+            raw_text: cleaned.title.clone().unwrap_or_default(),
+            cleaned: Some(cleaned),
+            error: None,
+        }),
+        Err(e) => Ok(OcrDraft {
+            raw_text: String::new(),
+            cleaned: None,
+            error: Some(e.to_string()),
+        }),
+    }
 }
 
 /// 仅对文本做 LLM 清洗（不经过 OCR）

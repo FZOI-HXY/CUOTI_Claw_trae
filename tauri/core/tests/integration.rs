@@ -69,14 +69,3 @@ async fn test_crud_and_stats() {
     let stats_after = stats::get_stats(&state).await.expect("stats after");
     assert_eq!(stats_after.total, 0);
 }
-
-#[tokio::test]
-async fn test_ocr_parser() {
-    use cuoti_core::ocr::PaddleOcrService;
-
-    // VL 模型 JSONL 结构
-    let jsonl = r##"{"result":{"layoutParsingResults":[{"markdown":{"text":"# 题目\n1+1=?"}}]}}"##;
-    let result = PaddleOcrService::extract_result(jsonl, None);
-    assert!(result.success);
-    assert!(result.markdown_text.contains("1+1=?"));
-}

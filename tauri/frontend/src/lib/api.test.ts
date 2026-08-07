@@ -139,19 +139,6 @@ describe("api", () => {
   });
 
   describe("配置", () => {
-    it("getOcrConfig 调用 get_ocr_config", async () => {
-      invoke.mockResolvedValue({});
-      await api.getOcrConfig();
-      expect(invoke).toHaveBeenCalledWith("get_ocr_config");
-    });
-
-    it("setOcrConfig 调用 set_ocr_config", async () => {
-      invoke.mockResolvedValue(undefined);
-      const cfg = { api_url: "u", api_key: "k", model: "m" };
-      await api.setOcrConfig(cfg);
-      expect(invoke).toHaveBeenCalledWith("set_ocr_config", { cfg });
-    });
-
     it("getLlmConfig 调用 get_llm_config", async () => {
       invoke.mockResolvedValue({});
       await api.getLlmConfig();

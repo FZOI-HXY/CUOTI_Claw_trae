@@ -60,11 +60,9 @@ fn main() {
             // 配置
             get_config,
             set_config,
-            get_ocr_config,
-            set_ocr_config,
             get_llm_config,
             set_llm_config,
-            // OCR
+            // AI 识别
             recognize_image,
             clean_text,
             // 图片
@@ -300,29 +298,6 @@ async fn set_config(
 }
 
 #[tauri::command]
-async fn get_ocr_config(state: State<'_, AppState>) -> Result<cuoti_core::models::OcrConfig, String> {
-    let mut cfg = config::get_ocr_config(&state).await.map_err(|e| e.to_string())?;
-    if !cfg.api_key.is_empty() {
-        cfg.api_key = API_KEY_MASK.to_string();
-    }
-    Ok(cfg)
-}
-
-#[tauri::command]
-async fn set_ocr_config(
-    state: State<'_, AppState>,
-    mut cfg: cuoti_core::models::OcrConfig,
-) -> Result<(), String> {
-    // 掩码或空值视为不变更，保留原 key
-    if cfg.api_key.is_empty() || cfg.api_key == API_KEY_MASK {
-        if let Ok(cur) = config::get_ocr_config(&state).await {
-            cfg.api_key = cur.api_key;
-        }
-    }
-    config::set_ocr_config(&state, cfg).await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 async fn get_llm_config(state: State<'_, AppState>) -> Result<cuoti_core::models::LlmConfig, String> {
     let mut cfg = config::get_llm_config(&state).await.map_err(|e| e.to_string())?;
     if !cfg.api_key.is_empty() {
@@ -345,7 +320,7 @@ async fn set_llm_config(
     config::set_llm_config(&state, cfg).await.map_err(|e| e.to_string())
 }
 
-// ---- OCR ----
+// ---- AI 识别 ----
 
 #[tauri::command]
 async fn recognize_image(

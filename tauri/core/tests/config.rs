@@ -2,7 +2,7 @@
 
 use cuoti_core::commands::{config, AppState};
 use cuoti_core::db;
-use cuoti_core::models::{ConfigItem, LlmConfig, OcrConfig};
+use cuoti_core::models::{ConfigItem, LlmConfig};
 
 async fn state() -> AppState {
     AppState::new(db::init_db(None).await.expect("memory db"))
@@ -29,30 +29,6 @@ async fn test_set_overwrites_existing_value() {
 async fn test_get_missing_returns_none() {
     let s = state().await;
     assert_eq!(config::get(&s, "no_such_key").await, None);
-}
-
-#[tokio::test]
-async fn test_get_ocr_config_returns_defaults_when_empty() {
-    let s = state().await;
-    let cfg = config::get_ocr_config(&s).await.expect("ocr config");
-    assert!(cfg.api_url.contains("paddleocr"));
-    assert!(cfg.api_key.is_empty());
-    assert_eq!(cfg.model, "PaddleOCR-VL-1.6");
-}
-
-#[tokio::test]
-async fn test_set_get_ocr_config_roundtrip() {
-    let s = state().await;
-    let cfg = OcrConfig {
-        api_url: "https://example.com/api".into(),
-        api_key: "secret".into(),
-        model: "PaddleOCRv6".into(),
-    };
-    config::set_ocr_config(&s, cfg.clone()).await.expect("set ocr");
-    let got = config::get_ocr_config(&s).await.expect("get ocr");
-    assert_eq!(got.api_url, cfg.api_url);
-    assert_eq!(got.api_key, cfg.api_key);
-    assert_eq!(got.model, cfg.model);
 }
 
 #[tokio::test]
@@ -95,33 +71,6 @@ async fn test_set_get_llm_config_roundtrip() {
     assert_eq!(got.api_key, cfg.api_key);
     assert_eq!(got.model, cfg.model);
     assert!(got.enabled);
-}
-
-#[tokio::test]
-async fn test_ensure_configured_rejects_empty() {
-    let bad = OcrConfig {
-        api_url: "".into(),
-        api_key: "".into(),
-        model: "PaddleOCR-VL-1.6".into(),
-    };
-    assert!(config::ensure_configured(&bad).is_err());
-
-    let missing_key = OcrConfig {
-        api_url: "https://x.com".into(),
-        api_key: "".into(),
-        model: "PaddleOCR-VL-1.6".into(),
-    };
-    assert!(config::ensure_configured(&missing_key).is_err());
-}
-
-#[tokio::test]
-async fn test_ensure_configured_accepts_full() {
-    let ok = OcrConfig {
-        api_url: "https://x.com".into(),
-        api_key: "k".into(),
-        model: "PaddleOCR-VL-1.6".into(),
-    };
-    assert!(config::ensure_configured(&ok).is_ok());
 }
 
 #[tokio::test]

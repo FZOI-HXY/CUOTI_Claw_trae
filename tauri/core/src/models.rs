@@ -202,14 +202,6 @@ pub struct ConfigItem {
     pub value: String,
 }
 
-/// PaddleOCR 配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OcrConfig {
-    pub api_url: String,
-    pub api_key: String,
-    pub model: String,
-}
-
 /// LLM 清洗配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
