@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import * as api from "../lib/api";
 import { useMetaStore } from "../stores/meta";
 import type { Question, QuestionFilter } from "../lib/types";
@@ -54,6 +55,10 @@ function parseOptions(options: string | null): string[] {
 
 function optionsOf(q: Question): string[] {
   return optionsCache.get(q.id) ?? [];
+}
+
+function imageSrc(path: string | null | undefined): string {
+  return path ? convertFileSrc(path) : "";
 }
 
 async function onToggleFavorite(q: Question) {
@@ -141,6 +146,12 @@ onMounted(() => {
         class="block bg-white rounded-xl shadow-sm p-4 hover:shadow-md transition cursor-pointer"
       >
         <div class="flex items-start justify-between gap-3">
+          <img
+            v-if="imageSrc(q.image_path)"
+            :src="imageSrc(q.image_path)"
+            alt="题目图片"
+            class="w-16 h-16 rounded-lg border border-gray-200 object-cover shrink-0"
+          />
           <div class="flex-1">
             <div class="flex items-center gap-2 mb-1">
               <span class="text-xs px-2 py-0.5 rounded bg-brand-50 text-brand-600">

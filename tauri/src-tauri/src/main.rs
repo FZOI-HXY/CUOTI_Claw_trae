@@ -3,7 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use cuoti_core::commands::{
-    backup, chapter, config, ocr, question, rag as rag_cmd, stats, subject, tag, AppState,
+    backup, chapter, config, image, ocr, question, rag as rag_cmd, stats, subject, tag, AppState,
 };
 use cuoti_core::db;
 use cuoti_core::meta;
@@ -24,7 +24,7 @@ fn main() {
             let db_path = app_data_dir.join("errors.db");
             let db_path_str = db_path.to_str().unwrap();
             let pool = tauri::async_runtime::block_on(db::init_db(Some(db_path_str)))?;
-            app.manage(AppState::new(pool));
+            app.manage(AppState::with_data_dir(pool, app_data_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -67,6 +67,8 @@ fn main() {
             // OCR
             recognize_image,
             clean_text,
+            // 图片
+            save_image,
             get_meta,
             // 备份
             export_all,
@@ -360,6 +362,19 @@ async fn clean_text(
     text: String,
 ) -> Result<cuoti_core::models::CleanedQuestion, String> {
     ocr::clean_text(&state, text).await.map_err(|e| e.to_string())
+}
+
+// ---- 图片 ----
+
+#[tauri::command]
+async fn save_image(
+    state: State<'_, AppState>,
+    image_data: Vec<u8>,
+    filename: String,
+) -> Result<String, String> {
+    image::save_image(&state, image_data, filename)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ---- 元信息 ----

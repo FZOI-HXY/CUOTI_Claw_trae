@@ -71,6 +71,11 @@ export const recognizeImage = (imageData: number[], filename: string) =>
 export const cleanText = (text: string) =>
   invoke<CleanedQuestion>("clean_text", { text });
 
+// ---- 图片 ----
+/** 保存错题图片到应用数据目录，返回可持久化的绝对路径 */
+export const saveImage = (imageData: number[], filename: string) =>
+  invoke<string>("save_image", { imageData, filename });
+
 // ---- RAG ----
 export const ragAsk = (question: string, top_k?: number) =>
   invoke<RagAnswer>("rag_ask", { question, top_k });

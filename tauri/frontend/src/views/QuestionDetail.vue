@@ -3,6 +3,7 @@ import { onMounted, ref, watch } from "vue";
 import { useRouter, useRoute, onBeforeRouteLeave } from "vue-router";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readFile } from "@tauri-apps/plugin-fs";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import * as api from "../lib/api";
 import { useMetaStore } from "../stores/meta";
 import type {
@@ -40,6 +41,7 @@ const tagsInput = ref("");
 const optionsText = ref("");
 const ocrText = ref("");
 const ocrLoading = ref(false);
+const imageSaving = ref(false);
 const saving = ref(false);
 const dirty = ref(false);
 
@@ -95,6 +97,33 @@ async function handleFileSelect() {
   } finally {
     ocrLoading.value = false;
   }
+}
+
+// 选择并持久化错题图片：保存到应用数据目录，路径写入 image_path
+async function handleImageSelect() {
+  const file = await open({
+    multiple: false,
+    filters: [{ name: "图片", extensions: ["jpg", "jpeg", "png", "webp", "gif"] }],
+  });
+  if (!file) return;
+  imageSaving.value = true;
+  try {
+    const data = await readFile(file.path);
+    const saved = await api.saveImage(Array.from(data), file.name);
+    form.value.image_path = saved;
+  } catch (e) {
+    alert(`保存图片失败: ${e}`);
+  } finally {
+    imageSaving.value = false;
+  }
+}
+
+function removeImage() {
+  form.value.image_path = "";
+}
+
+function imageSrc(path: string | null | undefined): string {
+  return path ? convertFileSrc(path) : "";
 }
 
 async function submit() {
@@ -231,6 +260,35 @@ onMounted(async () => {
         class="w-full border border-gray-200 rounded-lg px-3 py-2"
         placeholder="输入题干…"
       />
+    </div>
+
+    <div class="mb-4">
+      <div class="flex items-center justify-between mb-2">
+        <label class="block text-sm font-medium text-gray-700">题目图片</label>
+        <div class="flex gap-2">
+          <button
+            :disabled="imageSaving"
+            class="px-3 py-1 text-sm bg-brand-50 text-brand-600 rounded hover:bg-brand-100"
+            @click="handleImageSelect"
+          >
+            {{ imageSaving ? "保存中…" : form.image_path ? "更换图片" : "选择图片" }}
+          </button>
+          <button
+            v-if="form.image_path"
+            class="px-3 py-1 text-sm border border-gray-200 rounded hover:bg-gray-50"
+            @click="removeImage"
+          >
+            移除
+          </button>
+        </div>
+      </div>
+      <img
+        v-if="imageSrc(form.image_path)"
+        :src="imageSrc(form.image_path)"
+        alt="题目图片"
+        class="max-h-48 rounded-lg border border-gray-200 object-contain"
+      />
+      <p v-else class="text-sm text-gray-400">尚未选择图片，可上传以保留题目原图。</p>
     </div>
 
     <div class="mb-4">
