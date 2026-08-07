@@ -166,3 +166,45 @@ async fn test_set_all_empty_commits_ok() {
     config::set_all(&s, Vec::new()).await.expect("empty set all ok");
     assert!(config::get_all(&s).await.expect("get all").is_empty());
 }
+
+#[tokio::test]
+async fn test_embed_provider_defaults_to_local() {
+    let s = state().await;
+    let (provider, model) = config::get_embed_config(&s).await.expect("embed config");
+    assert_eq!(provider, "local");
+    assert_eq!(model, "bge-small-zh-v1.5");
+}
+
+#[tokio::test]
+async fn test_embed_provider_api_requires_llm_config() {
+    let s = state().await;
+    config::set_embed_config(&s, "api", "text-embedding-v4")
+        .await
+        .expect("set embed config");
+    // LLM 未配置，应报错而非发起网络请求
+    let res = cuoti_core::commands::rag::current_embedder(&s).await;
+    assert!(res.is_err(), "api 嵌入缺 LLM 配置应失败");
+}
+
+#[tokio::test]
+async fn test_embed_provider_api_with_llm_config_returns_1024_dim() {
+    let s = state().await;
+    config::set_embed_config(&s, "api", "text-embedding-v4")
+        .await
+        .expect("set embed config");
+    config::set_llm_config(
+        &s,
+        LlmConfig {
+            base_url: "https://ws-x.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".into(),
+            api_key: "sk-test".into(),
+            model: "qwen3.8-max".into(),
+            enabled: true,
+        },
+    )
+    .await
+    .expect("set llm config");
+    let e = cuoti_core::commands::rag::current_embedder(&s)
+        .await
+        .expect("api embedder");
+    assert_eq!(e.dim(), 1024, "api 嵌入应固定 1024 维");
+}

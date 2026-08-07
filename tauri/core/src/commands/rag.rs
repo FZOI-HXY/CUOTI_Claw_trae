@@ -1,8 +1,8 @@
 //! RAG 命令编排：组装 embedder / cleaner，调用 rag 服务
 
 use crate::cleaner::LlmCleaner;
-use crate::embedder;
-use crate::error::Result;
+use crate::embedder::{self, ApiEmbedder, Embedder};
+use crate::error::{Error, Result};
 use crate::models::{RagAnswer, RagSource};
 use crate::rag::{self, IndexSummary};
 
@@ -10,6 +10,31 @@ use super::{config, AppState};
 
 /// 问答/检索输入的最大长度上限（字符），防止超长输入造成 token 浪费
 const MAX_QUERY_LEN: usize = 2000;
+
+/// 云端嵌入固定使用 1024 维（text-embedding-v3/v4 默认维度）
+const API_EMBED_DIM: usize = 1024;
+
+/// 按配置选择嵌入器：`embed_provider=api` 走百炼云端，否则用本地 fastembed。
+/// base_url/api_key 复用 LLM 配置（同一百炼业务空间），模型名用 `embed_model`。
+pub async fn current_embedder(state: &AppState) -> Result<Box<dyn Embedder>> {
+    let (provider, model) = config::get_embed_config(state).await?;
+    if provider == "api" {
+        let llm = config::get_llm_config(state).await?;
+        if llm.base_url.is_empty() || llm.api_key.is_empty() {
+            return Err(Error::Cleaner(
+                "使用 API 嵌入需先在设置中配置 LLM base_url 与 api_key".into(),
+            ));
+        }
+        Ok(Box::new(ApiEmbedder::new(
+            &llm.base_url,
+            &llm.api_key,
+            &model,
+            API_EMBED_DIM,
+        )))
+    } else {
+        Ok(Box::new(embedder::local_embedder().await?.clone()))
+    }
+}
 
 /// 问答：检索 + LLM 生成
 pub async fn ask(state: &AppState, question: String, top_k: Option<usize>) -> Result<RagAnswer> {
@@ -22,9 +47,10 @@ pub async fn ask(state: &AppState, question: String, top_k: Option<usize>) -> Re
     }
     let llm_cfg = config::get_llm_config(state).await?;
     let cleaner = LlmCleaner::new(&llm_cfg);
+    let embedder = current_embedder(state).await?;
     rag::ask_with_rerank(
         state,
-        embedder::local_embedder().await?,
+        embedder.as_ref(),
         embedder::local_reranker().await?,
         &cleaner,
         &question,
@@ -35,12 +61,14 @@ pub async fn ask(state: &AppState, question: String, top_k: Option<usize>) -> Re
 
 /// 为所有错题建立向量索引，返回索引数量
 pub async fn index(state: &AppState) -> Result<usize> {
-    rag::index_all(state, embedder::local_embedder().await?).await
+    let embedder = current_embedder(state).await?;
+    rag::index_all(state, embedder.as_ref()).await
 }
 
 /// 增量索引：仅处理无向量或已过期的错题
 pub async fn index_incremental(state: &AppState) -> Result<IndexSummary> {
-    rag::index_incremental(state, embedder::local_embedder().await?).await
+    let embedder = current_embedder(state).await?;
+    rag::index_incremental(state, embedder.as_ref()).await
 }
 
 /// 纯语义检索（供调试/后续语义搜索）
@@ -52,5 +80,6 @@ pub async fn retrieve(state: &AppState, query: String, top_k: Option<usize>) -> 
             MAX_QUERY_LEN
         )));
     }
-    rag::retrieve(state, embedder::local_embedder().await?, &query, top_k).await
+    let embedder = current_embedder(state).await?;
+    rag::retrieve(state, embedder.as_ref(), &query, top_k).await
 }

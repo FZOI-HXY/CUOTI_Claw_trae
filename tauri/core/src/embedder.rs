@@ -18,6 +18,7 @@ pub trait Embedder: Send + Sync {
 }
 
 /// 本地 fastembed 嵌入实现（bge-small-zh-v1.5，CPU/ONNX）
+#[derive(Clone)]
 pub struct LocalEmbedder {
     model: Arc<TextEmbedding>,
     dim: usize,
@@ -68,6 +69,7 @@ pub trait Reranker: Send + Sync {
 }
 
 /// 本地 fastembed 重排实现（bge-reranker-base，中英双语，CPU/ONNX）
+#[derive(Clone)]
 pub struct LocalReranker {
     model: Arc<TextRerank>,
 }
@@ -108,6 +110,103 @@ impl Reranker for LocalReranker {
         .await
         .map_err(|e| Error::Cleaner(format!("重排线程失败: {}", e)))?
     }
+}
+
+/// 云端 OpenAI 兼容 Embedding 实现（阿里云百炼等）。
+/// 仅持有请求所需配置，每次嵌入新建 HTTP 客户端，无本地模型加载。
+pub struct ApiEmbedder {
+    base_url: String,
+    api_key: String,
+    model: String,
+    dim: usize,
+}
+
+impl ApiEmbedder {
+    pub fn new(base_url: &str, api_key: &str, model: &str, dim: usize) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key: api_key.to_string(),
+            model: model.to_string(),
+            dim,
+        }
+    }
+
+    /// 带超时的 HTTP 客户端，避免请求无限挂起
+    fn client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl Embedder for ApiEmbedder {
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let client = Self::client();
+        let url = format!("{}/embeddings", self.base_url);
+        let body = serde_json::json!({
+            "model": self.model,
+            "input": texts,
+            "dimensions": self.dim,
+            "encoding_format": "float"
+        });
+        let resp = client
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Cleaner(format!("调用向量 API 失败: {}", e)))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let msg = resp.text().await.unwrap_or_default();
+            return Err(Error::Cleaner(format!(
+                "向量 API HTTP {}: {}",
+                status,
+                msg.chars().take(200).collect::<String>()
+            )));
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| Error::Cleaner(format!("读取向量响应失败: {}", e)))?;
+        parse_embeddings_response(&text)
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+}
+
+/// 解析 OpenAI 兼容 embeddings 响应 → 向量列表。
+/// 纯函数便于单测：`{"data":[{"embedding":[...],"index":0},...]}`。
+pub fn parse_embeddings_response(json: &str) -> Result<Vec<Vec<f32>>> {
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| Error::Cleaner(format!("解析向量响应失败: {}", e)))?;
+    let data = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .ok_or_else(|| Error::Cleaner("向量响应缺少 data".into()))?;
+    let mut out = Vec::with_capacity(data.len());
+    for item in data {
+        let emb = item
+            .get("embedding")
+            .and_then(|e| e.as_array())
+            .ok_or_else(|| Error::Cleaner("向量条目缺少 embedding".into()))?;
+        let vec: Vec<f32> = emb
+            .iter()
+            .filter_map(|x| x.as_f64().map(|f| f as f32))
+            .collect();
+        if vec.is_empty() {
+            return Err(Error::Cleaner("向量条目为空".into()));
+        }
+        out.push(vec);
+    }
+    Ok(out)
 }
 
 /// 全局单例：整个应用只加载一次本地重排模型
@@ -210,5 +309,38 @@ mod tests {
     fn test_vec_codec_roundtrip() {
         let v = vec![1.5, -2.25, 0.0, 3.0];
         assert_eq!(decode_vec(&encode_vec(&v)), v);
+    }
+
+    #[test]
+    fn test_parse_embeddings_response_ok() {
+        let json = r#"{"data":[{"embedding":[0.1,0.2,-0.3],"index":0,"object":"embedding"}],"model":"text-embedding-v4","object":"list"}"#;
+        let out = parse_embeddings_response(json).unwrap();
+        assert_eq!(out, vec![vec![0.1f32, 0.2, -0.3]]);
+    }
+
+    #[test]
+    fn test_parse_embeddings_response_empty() {
+        let json = r#"{"data":[],"object":"list"}"#;
+        let out = parse_embeddings_response(json).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_parse_embeddings_response_missing_data() {
+        let json = r#"{"error":"bad"}"#;
+        assert!(parse_embeddings_response(json).is_err());
+    }
+
+    #[test]
+    fn test_parse_embeddings_response_empty_embedding_is_err() {
+        let json = r#"{"data":[{"embedding":[],"index":0}]}"#;
+        assert!(parse_embeddings_response(json).is_err());
+    }
+
+    #[test]
+    fn test_api_embedder_dim_and_url_trim() {
+        let e = ApiEmbedder::new("https://x.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/", "k", "text-embedding-v4", 1024);
+        assert_eq!(e.dim(), 1024);
+        assert!(!e.base_url.ends_with('/'));
     }
 }
