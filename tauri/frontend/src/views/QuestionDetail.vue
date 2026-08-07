@@ -88,9 +88,13 @@ async function handleFileSelect() {
   try {
     const data = await readFile(file.path);
     const result = await api.recognizeImage(Array.from(data), file.name);
-    ocrText.value = result.raw_text;
-    if (result.cleaned) {
-      fillFromCleaned(result.cleaned);
+    if (result.error) {
+      alert(`识别失败: ${result.error}`);
+    } else {
+      ocrText.value = result.raw_text;
+      if (result.cleaned) {
+        fillFromCleaned(result.cleaned);
+      }
     }
   } catch (e) {
     alert(`OCR 识别失败: ${e}`);

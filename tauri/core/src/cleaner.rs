@@ -106,11 +106,7 @@ OCR 文本：
     }
 
     /// 多模态：把图片直接喂给多模态 LLM，一次调用输出结构化错题
-    pub async fn clean_image(
-        &self,
-        image_data: &[u8],
-        filename: &str,
-    ) -> Result<CleanedQuestion> {
+    pub async fn clean_image(&self, image_data: &[u8], filename: &str) -> Result<CleanedQuestion> {
         self.check_config()?;
 
         const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
@@ -124,11 +120,16 @@ OCR 文本：
             )));
         }
 
-        let data_url = format!(
-            "data:{};base64,{}",
-            Self::mime_from_filename(filename),
-            BASE64.encode(image_data)
-        );
+        // 按文件头推断 MIME，文件名兜底；base64 编码放 blocking 线程，避免阻塞 async runtime
+        let data_url = {
+            let image_data = image_data.to_vec();
+            let mime = Self::detect_mime(&image_data, filename);
+            tokio::task::spawn_blocking(move || {
+                format!("data:{};base64,{}", mime, BASE64.encode(&image_data))
+            })
+            .await
+            .map_err(|e| Error::Cleaner(format!("编码图片失败: {}", e)))?
+        };
 
         let client = Self::client();
         let url = format!("{}/chat/completions", self.base_url);
@@ -156,7 +157,11 @@ OCR 文本：
         if !resp.status().is_success() {
             let status = resp.status();
             let msg = resp.text().await.unwrap_or_default();
-            return Err(Error::Cleaner(format!("LLM HTTP {}: {}", status, Self::truncate(&msg))));
+            return Err(Error::Cleaner(format!(
+                "LLM HTTP {}: {}",
+                status,
+                Self::truncate(&msg)
+            )));
         }
 
         let json: Value = resp
@@ -192,6 +197,26 @@ JSON 字段（全部可选，缺失就用 null）：\
             .to_string()
     }
 
+    /// 按文件头 magic bytes 推断图片 MIME，无法识别时用文件名扩展名兜底
+    fn detect_mime(data: &[u8], filename: &str) -> &'static str {
+        if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            return "image/jpeg";
+        }
+        if data.len() >= 8 && &data[..8] == b"\x89PNG\r\n\x1a\n" {
+            return "image/png";
+        }
+        if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+            return "image/webp";
+        }
+        if data.len() >= 4 && &data[..4] == b"GIF8" {
+            return "image/gif";
+        }
+        if data.len() >= 2 && &data[..2] == b"BM" {
+            return "image/bmp";
+        }
+        Self::mime_from_filename(filename)
+    }
+
     fn mime_from_filename(filename: &str) -> &'static str {
         let lower = filename.to_lowercase();
         if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
@@ -214,21 +239,35 @@ JSON 字段（全部可选，缺失就用 null）：\
         let parsed: Value = serde_json::from_str(cleaned_str)
             .map_err(|e| Error::Cleaner(format!("LLM 输出不是合法 JSON: {}", e)))?;
 
-        let get = |key: &str| parsed.get(key).and_then(|v| v.as_str()).map(|s| s.to_string());
-        let get_i64 = |key: &str| parsed.get(key).and_then(|v| v.as_i64());
-        let get_arr = |key: &str| {
+        let get = |key: &str| {
             parsed
                 .get(key)
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        };
+        let get_i64 = |key: &str| parsed.get(key).and_then(|v| v.as_i64());
+        let get_arr = |key: &str| {
+            parsed.get(key).and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
         };
 
+        // qtype 白名单校验：非约定值（single/multiple/judge/fill/answer）视为无效置 None
+        let qtype = parsed
+            .get("qtype")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| {
+                matches!(
+                    s.as_str(),
+                    "single" | "multiple" | "judge" | "fill" | "answer"
+                )
+            });
+
         Ok(CleanedQuestion {
-            qtype: get("qtype"),
+            qtype,
             title: get("title"),
             options: get_arr("options"),
             answer: get("answer"),
@@ -269,7 +308,11 @@ impl Cleaner for LlmCleaner {
         if !resp.status().is_success() {
             let status = resp.status();
             let msg = resp.text().await.unwrap_or_default();
-            return Err(Error::Cleaner(format!("LLM HTTP {}: {}", status, Self::truncate(&msg))));
+            return Err(Error::Cleaner(format!(
+                "LLM HTTP {}: {}",
+                status,
+                Self::truncate(&msg)
+            )));
         }
 
         let json: Value = resp
@@ -315,7 +358,11 @@ impl Cleaner for LlmCleaner {
         if !resp.status().is_success() {
             let status = resp.status();
             let msg = resp.text().await.unwrap_or_default();
-            return Err(Error::Cleaner(format!("LLM HTTP {}: {}", status, Self::truncate(&msg))));
+            return Err(Error::Cleaner(format!(
+                "LLM HTTP {}: {}",
+                status,
+                Self::truncate(&msg)
+            )));
         }
 
         let json: Value = resp
@@ -375,8 +422,39 @@ mod tests {
 
     #[test]
     fn test_build_ask_prompt_contains_context_and_question() {
-        let prompt = LlmCleaner::build_ask_prompt("一元二次方程怎么解？", "[1] 题目: 解方程 x^2-5x+6=0");
+        let prompt =
+            LlmCleaner::build_ask_prompt("一元二次方程怎么解？", "[1] 题目: 解方程 x^2-5x+6=0");
         assert!(prompt.contains("x^2-5x+6=0"));
         assert!(prompt.contains("一元二次方程怎么解？"));
+    }
+
+    #[test]
+    fn test_parse_cleaned_qtype_whitelist() {
+        // 合法值大小写/空白归一化后保留
+        let q = LlmCleaner::parse_cleaned(r#"{"qtype":" SINGLE"}"#).unwrap();
+        assert_eq!(q.qtype.as_deref(), Some("single"));
+        // 非约定值置 None
+        let q = LlmCleaner::parse_cleaned(r#"{"qtype":"选择题"}"#).unwrap();
+        assert_eq!(q.qtype, None);
+        // 缺失字段不报错
+        let q = LlmCleaner::parse_cleaned(r#"{"title":"x"}"#).unwrap();
+        assert_eq!(q.qtype, None);
+    }
+
+    #[test]
+    fn test_detect_mime_magic_bytes() {
+        let png = b"\x89PNG\r\n\x1a\n\x00\x00";
+        assert_eq!(LlmCleaner::detect_mime(png, "x"), "image/png");
+        let jpg = [0xFF, 0xD8, 0xFF, 0xE0];
+        assert_eq!(LlmCleaner::detect_mime(&jpg, "x"), "image/jpeg");
+        let webp = b"RIFF\x00\x00\x00\x00WEBP";
+        assert_eq!(LlmCleaner::detect_mime(webp, "x"), "image/webp");
+        let gif = b"GIF89a";
+        assert_eq!(LlmCleaner::detect_mime(gif, "x"), "image/gif");
+        let bmp = b"BM\x00\x00";
+        assert_eq!(LlmCleaner::detect_mime(bmp, "x"), "image/bmp");
+        // 无法识别时回退到文件名扩展名
+        assert_eq!(LlmCleaner::detect_mime(b"abc", "photo.jpg"), "image/jpeg");
+        assert_eq!(LlmCleaner::detect_mime(b"abc", "photo.png"), "image/png");
     }
 }
