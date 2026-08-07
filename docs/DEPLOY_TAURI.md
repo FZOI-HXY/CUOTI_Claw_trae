@@ -40,8 +40,9 @@ tauri/
 ### 各平台系统依赖
 
 **Windows（Win10+）**
-- MSVC Build Tools（安装 Rust 时选 `msvc` toolchain 即可）
-- WebView2 Runtime（Win10/11 自带；Win7/旧系统需手动装）
+- **winget**：Win10/11 自带，用于安装 Rust/Node
+- **MSVC Build Tools**：提供 C++ 链接器（`x86_64-pc-windows-msvc` toolchain 需要），安装 `Microsoft.VisualStudio.2022.BuildTools` 时勾选「使用 C++ 的桌面开发」工作负载
+- **WebView2 Runtime**：Win10/11 自带；Win7/旧系统需手动装
 
 **macOS**
 - Xcode Command Line Tools：`xcode-select --install`
@@ -61,6 +62,35 @@ sudo apt install -y \
 ---
 
 ## 三、依赖安装
+
+### Windows（PowerShell）专属步骤
+
+> 以下命令在 **PowerShell** 中执行。Windows 下**不要**使用下面的 `curl | sh` 那条 Unix 命令。
+
+```powershell
+# 1. 安装 Rust（rustup）与 Node.js LTS
+winget install Rustlang.Rustup
+winget install OpenJS.NodeJS.LTS
+
+# 2. 重新打开 PowerShell，验证安装
+rustc --version
+cargo --version
+node --version
+npm --version
+
+# 3. 若 rustc 报缺 MSVC 链接器，安装 VS Build Tools（含 C++ 桌面开发）
+winget install Microsoft.VisualStudio.2022.BuildTools
+
+# 4. 进入项目安装前端依赖（路径换成你的实际项目位置）
+cd tauri/frontend
+npm install
+cd ..
+
+# 5. 安装 Tauri CLI
+cargo install tauri-cli --version "^2" --locked
+```
+
+### Linux / macOS（bash）
 
 ```bash
 # 1. Rust 工具链（如未安装）
