@@ -1,5 +1,7 @@
 # DocFlow — AI智能文档识别与管理系统 - 部署指南
 
+> **⭐ 桌面端现状**：当前桌面客户端为 **Tauri 桌面端**（Rust + Vue，识别走多模态 LLM「智谱 glm-4.5-air」），详见 → **[DEPLOY_TAURI.md](./DEPLOY_TAURI.md)**。本文档主体为旧的 Python Web 端与 Python 桌面端部署说明，保留供参考。
+
 ---
 
 ## 零、云端部署方案速查
@@ -193,22 +195,29 @@ server {
 
 ## 四、桌面客户端部署
 
-### 安装依赖
+### 当前推荐：Tauri 桌面端（多模态 LLM 识别）
+
+构建、打包、LLM 配置、数据目录与常见问题，请直接查看 → **[DEPLOY_TAURI.md](./DEPLOY_TAURI.md)**。
+
+```bash
+# 开发运行
+cd tauri && cargo tauri dev
+
+# 打包（前端构建 + 桌面应用）
+cd tauri/frontend && npm run build
+cd tauri && cargo tauri build
+```
+
+### 旧版：Python 桌面端（可选，PaddleOCR）
+
+> ⚠️ 已由 Tauri 桌面端取代，识别不再走 PaddleOCR，仅保留供参考。
 
 ```bash
 cd Claw/apps/desktop
 pip install -r requirements.txt
-```
-
-### 启动
-
-```bash
 python main.py
-```
 
-### 打包为可执行文件（可选）
-
-```bash
+# 打包为可执行文件（可选）
 pip install pyinstaller
 pyinstaller --onefile --windowed --name "Claw" main.py
 ```
