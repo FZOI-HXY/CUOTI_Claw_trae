@@ -187,7 +187,7 @@ async fn test_embed_provider_api_requires_llm_config() {
 }
 
 #[tokio::test]
-async fn test_embed_provider_api_with_llm_config_returns_1024_dim() {
+async fn test_embed_provider_api_with_llm_config_returns_512_dim() {
     let s = state().await;
     config::set_embed_config(&s, "api", "text-embedding-v4")
         .await
@@ -206,5 +206,6 @@ async fn test_embed_provider_api_with_llm_config_returns_1024_dim() {
     let e = cuoti_core::commands::rag::current_embedder(&s)
         .await
         .expect("api embedder");
-    assert_eq!(e.dim(), 1024, "api 嵌入应固定 1024 维");
+    // 云端维度与本地 bge-small-zh-v1.5 同步为 512，切换无需重建索引
+    assert_eq!(e.dim(), 512, "api 嵌入应固定 512 维与本地同步");
 }

@@ -11,8 +11,12 @@ use super::{config, AppState};
 /// 问答/检索输入的最大长度上限（字符），防止超长输入造成 token 浪费
 const MAX_QUERY_LEN: usize = 2000;
 
-/// 云端嵌入固定使用 1024 维（text-embedding-v3/v4 默认维度）
-const API_EMBED_DIM: usize = 1024;
+/// 本地 bge-small-zh-v1.5 的固定向量维度
+const LOCAL_EMBED_DIM: usize = 512;
+
+/// 云端嵌入维度，必须与本地一致（text-embedding-v3/v4 支持 512 维）。
+/// 两者保持同步，切换 provider 时向量可复用，无需重建索引。
+const API_EMBED_DIM: usize = LOCAL_EMBED_DIM;
 
 /// 按配置选择嵌入器：`embed_provider=api` 走百炼云端，否则用本地 fastembed。
 /// base_url/api_key 复用 LLM 配置（同一百炼业务空间），模型名用 `embed_model`。
