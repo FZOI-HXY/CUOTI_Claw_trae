@@ -11,12 +11,9 @@ use super::{config, AppState};
 /// 问答/检索输入的最大长度上限（字符），防止超长输入造成 token 浪费
 const MAX_QUERY_LEN: usize = 2000;
 
-/// 本地 bge-small-zh-v1.5 的固定向量维度
-const LOCAL_EMBED_DIM: usize = 512;
-
-/// 云端嵌入维度，必须与本地一致（text-embedding-v3/v4 支持 512 维）。
-/// 两者保持同步，切换 provider 时向量可复用，无需重建索引。
-const API_EMBED_DIM: usize = LOCAL_EMBED_DIM;
+/// 云端嵌入维度（text-embedding-v4 默认 1024，质量更高，作为主用）。
+/// 本地 bge-small-zh-v1.5 为 512 维轻量兜底，二者维度不同，切换 provider 后需重建索引。
+const API_EMBED_DIM: usize = 1024;
 
 /// 按配置选择嵌入器：`embed_provider=api` 走百炼云端，否则用本地 fastembed。
 /// base_url/api_key 复用 LLM 配置（同一百炼业务空间），模型名用 `embed_model`。
@@ -52,15 +49,19 @@ pub async fn ask(state: &AppState, question: String, top_k: Option<usize>) -> Re
     let llm_cfg = config::get_llm_config(state).await?;
     let cleaner = LlmCleaner::new(&llm_cfg);
     let embedder = current_embedder(state).await?;
-    rag::ask_with_rerank(
-        state,
-        embedder.as_ref(),
-        embedder::local_reranker().await?,
-        &cleaner,
-        &question,
-        top_k,
-    )
-    .await
+    if config::get_rerank_enabled(state).await {
+        rag::ask_with_rerank(
+            state,
+            embedder.as_ref(),
+            embedder::local_reranker().await?,
+            &cleaner,
+            &question,
+            top_k,
+        )
+        .await
+    } else {
+        rag::ask(state, embedder.as_ref(), &cleaner, &question, top_k).await
+    }
 }
 
 /// 为所有错题建立向量索引，返回索引数量

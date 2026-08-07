@@ -339,8 +339,8 @@ mod tests {
 
     #[test]
     fn test_api_embedder_dim_and_url_trim() {
-        let e = ApiEmbedder::new("https://x.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/", "k", "text-embedding-v4", 512);
-        assert_eq!(e.dim(), 512);
+        let e = ApiEmbedder::new("https://x.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/", "k", "text-embedding-v4", 1024);
+        assert_eq!(e.dim(), 1024);
         assert!(!e.base_url.ends_with('/'));
     }
 }

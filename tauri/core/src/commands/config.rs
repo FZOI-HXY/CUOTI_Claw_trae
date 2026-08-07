@@ -14,6 +14,7 @@ const KEY_LLM_MODEL: &str = "llm_model";
 const KEY_LLM_ENABLED: &str = "llm_enabled";
 const KEY_EMBED_PROVIDER: &str = "embed_provider";
 const KEY_EMBED_MODEL: &str = "embed_model";
+const KEY_RERANK_ENABLED: &str = "rerank_enabled";
 
 pub async fn get(state: &AppState, key: &str) -> Option<String> {
     sqlx::query_scalar::<_, String>("SELECT value FROM config WHERE key = ?")
@@ -117,4 +118,16 @@ pub async fn set_embed_config(state: &AppState, provider: &str, model: &str) -> 
     set(state, KEY_EMBED_PROVIDER, provider).await?;
     set(state, KEY_EMBED_MODEL, model).await?;
     Ok(())
+}
+
+/// 重排开关（cross-encoder），默认开启。纯 CPU / 低内存环境可关闭以省内存与延迟。
+pub async fn get_rerank_enabled(state: &AppState) -> bool {
+    get(state, KEY_RERANK_ENABLED)
+        .await
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true)
+}
+
+pub async fn set_rerank_enabled(state: &AppState, enabled: bool) -> Result<()> {
+    set(state, KEY_RERANK_ENABLED, &enabled.to_string()).await
 }

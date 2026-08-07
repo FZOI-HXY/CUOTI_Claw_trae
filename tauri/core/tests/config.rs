@@ -187,7 +187,7 @@ async fn test_embed_provider_api_requires_llm_config() {
 }
 
 #[tokio::test]
-async fn test_embed_provider_api_with_llm_config_returns_512_dim() {
+async fn test_embed_provider_api_with_llm_config_returns_1024_dim() {
     let s = state().await;
     config::set_embed_config(&s, "api", "text-embedding-v4")
         .await
@@ -206,6 +206,22 @@ async fn test_embed_provider_api_with_llm_config_returns_512_dim() {
     let e = cuoti_core::commands::rag::current_embedder(&s)
         .await
         .expect("api embedder");
-    // 云端维度与本地 bge-small-zh-v1.5 同步为 512，切换无需重建索引
-    assert_eq!(e.dim(), 512, "api 嵌入应固定 512 维与本地同步");
+    // 云端主用 1024 维；本地 bge-small 512 维作兜底，切换 provider 需重建索引
+    assert_eq!(e.dim(), 1024, "api 嵌入应固定 1024 维");
+}
+
+#[tokio::test]
+async fn test_rerank_enabled_defaults_true() {
+    let s = state().await;
+    assert!(config::get_rerank_enabled(&s).await, "未配置时应默认开启重排");
+}
+
+#[tokio::test]
+async fn test_rerank_enabled_set_false_then_get() {
+    let s = state().await;
+    config::set_rerank_enabled(&s, false).await.expect("set false");
+    assert!(!config::get_rerank_enabled(&s).await);
+
+    config::set_rerank_enabled(&s, true).await.expect("set true");
+    assert!(config::get_rerank_enabled(&s).await);
 }
